@@ -1,0 +1,89 @@
+# Releasing
+
+Tag-driven, fully automated builds. **Pushing a `v*` tag is the trigger** — GitHub
+Actions builds macOS (universal DMG), Windows (NSIS `.exe` + `.msi`), and Linux
+(AppImage + `.deb`) in parallel and assembles a **draft release** with the matching
+CHANGELOG section as the release notes. The only manual step is clicking **Publish**
+after a smoke test.
+
+## The whole flow (3 commands + one click)
+
+```bash
+# 0. One-time per shell: SSH agent (HTTPS pushes fail for this org)
+eval $(ssh-agent -s) && ssh-add ~/.ssh/id_ed25519
+
+# 1. Bump the version everywhere it must agree + seed a CHANGELOG section
+scripts/bump_version.sh 0.2.0
+
+# 2. Write the CHANGELOG entry, then commit on main
+git add -A && git commit -m "Release v0.2.0"
+
+# 3. Ship it (validates everything, pushes main, then pushes the tag)
+scripts/release.sh v0.2.0
+```
+
+Then watch CI (`gh run watch --repo hermes-webui/hermes-desktop-rust`), and when all
+three platform jobs are green: **Releases → v0.2.0 → Publish release**.
+
+## What the scripts enforce (don't bypass them)
+
+`scripts/release.sh` refuses to ship unless:
+
+- you're on `main` with a clean tree;
+- the tag, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` versions all
+  agree (`bump_version.sh` keeps them in sync, plus `package.json` and `Cargo.lock`);
+- `CHANGELOG.md` has a `## [vX.Y.Z]` section (it becomes the release notes via
+  `scripts/extract_changelog.py`);
+- `cargo test` passes locally.
+
+It then pushes `main` and the tag as **two separate operations** — pushing both in
+one `git push` sometimes drops one of the two events and the workflow never fires
+(inherited lesson from hermes-swift-mac v1.0.5). If a tag ever lands without a
+workflow run, trigger manually: Actions → Build and Release → Run workflow, or
+re-push the tag.
+
+## What happens automatically on tag push
+
+`.github/workflows/release.yml`:
+
+1. `changelog` job extracts the `## [vX.Y.Z]` section → release body.
+2. Build matrix (all unsigned for now):
+   - `macos-14` → universal (arm64+x86_64) `.dmg` + `.app.tar.gz`
+   - `windows-2022` → NSIS `.exe` (WebView2 bootstrapper embedded) + `.msi`
+   - `ubuntu-22.04` → `.AppImage` + `.deb`
+3. Artifacts upload to a **draft** GitHub release named for the tag. Re-running a
+   failed job (or re-pushing the same tag) updates the same draft.
+
+`.github/workflows/test.yml` (fmt + clippy `-D warnings` + `cargo test`) runs on
+every push/PR to `main` — keep it green so step 3 of a release never surprises you.
+
+## Fixing a botched release (before publishing)
+
+```bash
+# fix the problem on main, then move the tag and re-fire:
+git push origin :refs/tags/v0.2.0 && git tag -d v0.2.0
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The draft release is reused; stale assets are replaced. Never move a tag that has
+already been **published** — cut a patch release instead.
+
+## Enabling macOS signing + notarization (when ready)
+
+Add fresh repo secrets in
+[tauri's format](https://tauri.app/distribute/sign/macos/) — `APPLE_CERTIFICATE`
+(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
+`APPLE_PASSWORD`, `APPLE_TEAM_ID` — then uncomment the env block in
+`.github/workflows/release.yml`. **Don't rely on inherited org secrets** (a
+present-but-unusable `APPLE_CERTIFICATE` makes the bundler attempt signing and fail —
+this broke the very first run). Windows signing (Azure Trusted Signing / OV cert) is
+likewise config-only when wanted.
+
+## Optional: zero-touch releases
+
+Releases are drafts so unsigned builds get a human smoke test. To make a tag publish
+the release with no clicks at all, flip one line in `release.yml`:
+
+```yaml
+releaseDraft: false
+```

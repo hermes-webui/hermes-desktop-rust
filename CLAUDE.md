@@ -66,14 +66,17 @@ git push origin <branch>     # or: git push origin vX.Y.Z
 ```
 HTTPS token push fails for this org. Always use ssh-agent.
 
-### Releases: push main and the tag as SEPARATE operations
-Use `scripts/release.sh vX.Y.Z`. Pushing main and a tag in one `git push` sometimes
-delivers only one push event and the release workflow doesn't fire (learned in
-hermes-swift-mac v1.0.5).
+### Releases: follow RELEASING.md exactly
+The whole flow is `scripts/bump_version.sh X.Y.Z` → fill CHANGELOG → commit →
+`scripts/release.sh vX.Y.Z` → CI builds all three platforms into a draft release →
+publish. **[RELEASING.md](RELEASING.md) is the canonical doc** — including why main
+and the tag are pushed as separate operations (single-push drops events; learned in
+hermes-swift-mac v1.0.5) and how to fix a botched tag.
 
 ### Version parity — three files must agree
-`src-tauri/tauri.conf.json` (`version`), `src-tauri/Cargo.toml` (`version`), and the
-git tag. `scripts/release.sh` enforces this; don't bypass it.
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the git tag (plus
+`package.json`/`Cargo.lock` kept in step). `scripts/bump_version.sh` updates them
+all; `scripts/release.sh` refuses to ship on mismatch. Don't bypass either.
 
 ### Hard-won invariants (do not "simplify" these away)
 1. SSH forwards to `127.0.0.1` on the remote side, never `localhost` (IPv6-first
