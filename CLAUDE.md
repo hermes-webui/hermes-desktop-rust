@@ -95,6 +95,15 @@ all; `scripts/release.sh` refuses to ship on mismatch. Don't bypass either.
 7. Injected scripts (`bridge.rs`) only get `core:event:default` capability in remote
    content — never grant the remote origin command access.
 8. Windows ssh spawns need `CREATE_NO_WINDOW` or a console flashes per reconnect.
+9. **Never create a webview window synchronously inside an IPC command or
+   event handler.** On Windows, WebView2 init needs the main message loop
+   pumping — a webview built from a blocking main-thread context stalls forever
+   and the window never paints (v0.1.2 bug). Build windows from a worker thread
+   (the orchestrator pattern); window creation from background threads is safe
+   in Tauri on all three platforms.
+10. A transient zero-window moment must never exit the app — exit requests
+    without a code are suppressed everywhere and Win/Linux quit-on-last-close
+    is explicit in `windows::maybe_quit_after_close` (v0.1.1 bug).
 
 ### Cross-compiling Windows locally (optional — CI does this natively)
 ```bash
