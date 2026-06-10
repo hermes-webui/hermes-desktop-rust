@@ -26,6 +26,10 @@ base64 = "0.22"
 regex = "1"
 url = "2"
 
+[target.'cfg(unix)'.dependencies]
+# tunnel.rs uses libc::kill for the SIGTERM→SIGKILL teardown on macOS AND Linux
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = [
@@ -36,7 +40,6 @@ objc2-app-kit = { version = "0.2", features = [
     "NSView",
 ] }
 objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSArray", "NSEnumerator"] }
-libc = "0.2"
 
 [profile.release]
 strip = true
