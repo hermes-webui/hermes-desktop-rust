@@ -5,6 +5,8 @@ The cross-platform desktop app for [hermes-webui](https://github.com/nesquena/he
 with one-time SSH tunnel setup for remote servers, native tabs, theme-matched window
 chrome, clipboard image paste, and background-response notifications.
 
+<img width="1466" height="920" alt="image" src="https://github.com/user-attachments/assets/a7b81abc-f053-4e11-b2a4-ca3d4d8d72ea" />
+
 Built with [Tauri 2](https://tauri.app) (system webview + Rust — ~11 MB, no bundled
 browser). It is the cross-platform sibling of
 [hermes-swift-mac](https://github.com/hermes-webui/hermes-swift-mac), rebuilt 1:1 from
