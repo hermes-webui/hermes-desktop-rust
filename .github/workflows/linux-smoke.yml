@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            patchelf xvfb imagemagick
+            patchelf xvfb imagemagick dbus dbus-x11
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -63,11 +63,19 @@ jobs:
       - name: Launch app under Xvfb, assert connected, screenshot
         run: |
           export WEBKIT_DISABLE_DMABUF_RENDERER=1
-          xvfb-run -a -s "-screen 0 1400x900x24" bash -c '
+          # dbus-run-session: a real session bus, like any actual desktop —
+          # without it the single-instance plugin blocks ~25s on the D-Bus
+          # connect timeout at startup (first smoke-run finding).
+          xvfb-run -a -s "-screen 0 1400x900x24" dbus-run-session -- bash -c '
             set -e
             ./src-tauri/target/debug/hermes-webui-desktop > app.log 2>&1 &
             APP=$!
-            sleep 30
+            for i in $(seq 1 60); do
+              grep -q "conn: connected" app.log && break
+              kill -0 $APP || { echo "app died early"; cat app.log; exit 1; }
+              sleep 1
+            done
+            sleep 8   # let the strip + page paint
             import -window root screenshot.png
             kill -0 $APP || { echo "app died"; exit 1; }
             kill $APP || true
