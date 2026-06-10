@@ -17,9 +17,63 @@ pub fn reconnect(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         run(&app);
-        app.state::<AppState>()
-            .connecting
-            .store(false, Ordering::SeqCst);
+        let state = app.state::<AppState>();
+        state.connecting.store(false, Ordering::SeqCst);
+        // SSH connect failed → arm auto-recovery (the in-run set_status hook
+        // is suppressed while `connecting` is held, so arm it here).
+        if prefs::load(&app).connection_mode == "ssh"
+            && *state.tunnel_status.lock().unwrap() == crate::state::TunnelStatus::Disconnected
+        {
+            start_ssh_recovery(&app);
+        }
+    });
+}
+
+/// SSH-mode auto-recovery — the Swift app's NWPathMonitor reconnect (fix #38)
+/// translated: while the tunnel is down, watch for the SSH host's TCP port to
+/// become reachable and rerun the orchestrator the moment it is (covers
+/// laptop sleep/wake, Wi-Fi drops, VPN flaps). Because port 22 may not be the
+/// real ssh port (~/.ssh/config), there's also a blind retry every 60s.
+pub fn start_ssh_recovery(app: &AppHandle) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let state = app.state::<AppState>();
+    if state.connecting.load(Ordering::SeqCst) {
+        return;
+    }
+    let generation = state.recovery_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    log::info!("recovery(ssh): armed");
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut ticks: u32 = 0;
+        loop {
+            std::thread::sleep(Duration::from_secs(10));
+            ticks += 1;
+            let state = app.state::<AppState>();
+            if state.recovery_gen.load(Ordering::SeqCst) != generation
+                || state.connecting.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            if *state.tunnel_status.lock().unwrap() != crate::state::TunnelStatus::Disconnected {
+                return;
+            }
+            let p = prefs::load(&app);
+            if p.connection_mode != "ssh" {
+                return;
+            }
+            let host = p.ssh_host.trim().to_string();
+            let reachable = (host.as_str(), 22u16)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut addrs| addrs.next())
+                .map(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(3)).is_ok())
+                .unwrap_or(false);
+            if reachable || ticks.is_multiple_of(6) {
+                log::info!("recovery(ssh): attempting reconnect (host reachable: {reachable})");
+                reconnect(&app);
+                return;
+            }
+        }
     });
 }
 

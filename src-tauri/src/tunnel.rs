@@ -29,6 +29,11 @@ fn set_status(app: &AppHandle, status: TunnelStatus) {
     let state = app.state::<AppState>();
     *state.tunnel_status.lock().unwrap() = status;
     windows::on_tunnel_status_changed(app, status);
+    // Mid-session death (monitor / termination handler): arm auto-recovery.
+    // No-ops while the orchestrator is mid-run (`connecting` guard inside).
+    if status == TunnelStatus::Disconnected {
+        crate::conn::start_ssh_recovery(app);
+    }
 }
 
 pub fn current_status(app: &AppHandle) -> TunnelStatus {

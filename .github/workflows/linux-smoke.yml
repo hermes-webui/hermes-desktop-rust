@@ -1,0 +1,87 @@
+name: Linux Smoke
+
+# First-touch validation for the platform we can't test by hand: build the
+# app on Ubuntu (oldest supported WebKitGTK), launch it under Xvfb against a
+# fake hermes-webui, assert it connects and stays alive, and upload a real
+# screenshot of the rendering (tab strip + page) for human review.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            patchelf xvfb imagemagick
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build (debug)
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Start fake hermes-webui on :8787
+        run: |
+          cat > /tmp/fake_hermes.py <<'EOF'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+
+          PAGE = ("<html><head><title>Smoke chat — Hermes</title>"
+                  "<meta id='hermes-theme-color' content='#141425'></head>"
+                  "<body style=\"background:#141425;color:#e8e8ee;font:16px sans-serif;padding:2em\">"
+                  "<h1>hermes-webui (fake)</h1>"
+                  "<p>If you can read this in the screenshot, WebKitGTK + the "
+                  "multi-webview tab strip render on Linux.</p></body></html>").encode()
+
+          class H(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/html; charset=utf-8")
+                  self.end_headers()
+                  self.wfile.write(PAGE)
+              def log_message(self, *a):
+                  pass
+
+          HTTPServer(("127.0.0.1", 8787), H).serve_forever()
+          EOF
+          nohup python3 /tmp/fake_hermes.py > /dev/null 2>&1 &
+          sleep 1
+          curl -fsS http://127.0.0.1:8787/health > /dev/null
+
+      - name: Launch app under Xvfb, assert connected, screenshot
+        run: |
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          xvfb-run -a -s "-screen 0 1400x900x24" bash -c '
+            set -e
+            ./src-tauri/target/debug/hermes-webui-desktop > app.log 2>&1 &
+            APP=$!
+            sleep 30
+            import -window root screenshot.png
+            kill -0 $APP || { echo "app died"; exit 1; }
+            kill $APP || true
+          '
+          echo "=== app log ==="
+          cat app.log
+          grep -q "conn: connected" app.log || { echo "FAIL: never connected"; exit 1; }
+          grep -iq "panic" app.log && { echo "FAIL: panic in log"; exit 1; } || true
+
+      - name: Upload screenshot + log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-smoke
+          path: |
+            screenshot.png
+            app.log

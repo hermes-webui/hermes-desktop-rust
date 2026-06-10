@@ -383,6 +383,42 @@ const SHORTCUT_FORWARDER: &str = r##"
   }, true);
 "##;
 
+/// S13 — download bridge (mac/linux only): WKWebView and WebKitGTK do nothing
+/// for SPA-style downloads (a[download] / blob: URLs — how hermes-webui
+/// exports sessions). Intercept the click, read the blob in-page, and hand
+/// the bytes to native, which saves into ~/Downloads and notifies. Windows
+/// is NOT injected — WebView2's native Save As dialog is better UX.
+const DOWNLOAD_BRIDGE: &str = r##"
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[download], a[href^="blob:"]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href === '#') return;
+    e.preventDefault();
+    e.stopPropagation();
+    var name = a.getAttribute('download');
+    if (!name) {
+      try { name = new URL(href, location.href).pathname.split('/').pop(); } catch (err) {}
+    }
+    name = name || 'download';
+    fetch(href)
+      .then(function (r) { return r.blob(); })
+      .then(function (b) {
+        if (b.size > 30 * 1024 * 1024) {
+          EMIT('download-too-big', { name: name, size: b.size });
+          return;
+        }
+        var fr = new FileReader();
+        fr.onload = function () {
+          var data = String(fr.result);
+          EMIT('download', { name: name, data: data.slice(data.indexOf(',') + 1) });
+        };
+        fr.readAsDataURL(b);
+      })
+      .catch(function () {});
+  }, true);
+"##;
+
 /// Assemble the per-window initialization script.
 pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_STUB, SPEECH_SUPPRESS];
@@ -400,6 +436,9 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     parts.push(WINDOW_OPEN);
     parts.push(TITLE_WATCHER);
     parts.push(FIND_BAR);
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        parts.push(DOWNLOAD_BRIDGE);
+    }
     if is_ssh {
         parts.push(SSH_FOOTER);
     }
@@ -470,6 +509,26 @@ pub fn install(app: &AppHandle) {
             "reconnect" => {
                 conn::reconnect(&handle);
             }
+            "download" => {
+                use base64::Engine;
+                let name = payload["value"]["name"].as_str().unwrap_or("download");
+                let data = payload["value"]["data"].as_str().unwrap_or("");
+                match base64::engine::general_purpose::STANDARD.decode(data) {
+                    Ok(bytes) => save_download(&handle, name, &bytes),
+                    Err(e) => log::warn!("download: bad payload for {name}: {e}"),
+                }
+            }
+            "download-too-big" => {
+                let name = payload["value"]["name"].as_str().unwrap_or("file");
+                let _ = handle
+                    .notification()
+                    .builder()
+                    .title("Download too large")
+                    .body(format!(
+                        "{name} is too large to save from the app — open Hermes in your browser for this one."
+                    ))
+                    .show();
+            }
             "shortcut" => {
                 if let Some(v) = payload["value"].as_str() {
                     match v {
@@ -512,6 +571,63 @@ pub fn install(app: &AppHandle) {
             _ => {}
         }
     });
+}
+
+/// Save intercepted download bytes into ~/Downloads with collision-safe
+/// naming, then notify (mac/linux — see DOWNLOAD_BRIDGE).
+fn save_download(app: &AppHandle, name: &str, bytes: &[u8]) {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let safe = safe.trim().trim_start_matches('.');
+    let safe = if safe.is_empty() { "download" } else { safe };
+    let Ok(dir) = app.path().download_dir() else {
+        log::warn!("download: no download dir");
+        return;
+    };
+    let mut target = dir.join(safe);
+    let mut counter = 1;
+    while target.exists() {
+        let stem = std::path::Path::new(safe)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("download");
+        let ext = std::path::Path::new(safe)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        target = dir.join(format!("{stem} ({counter}){ext}"));
+        counter += 1;
+    }
+    match std::fs::write(&target, bytes) {
+        Ok(()) => {
+            log::info!(
+                "download: saved {} ({} bytes)",
+                target.display(),
+                bytes.len()
+            );
+            let shown = target
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(safe)
+                .to_string();
+            let _ = app
+                .notification()
+                .builder()
+                .title("Download complete")
+                .body(format!("Saved {shown} to Downloads"))
+                .show();
+        }
+        Err(e) => log::error!("download: write failed: {e}"),
+    }
 }
 
 /// hermesTheme handler port: parse → luminance → appearance fan-out + persist.
