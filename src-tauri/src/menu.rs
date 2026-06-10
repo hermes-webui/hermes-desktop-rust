@@ -8,6 +8,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let app_menu = SubmenuBuilder::new(app, "Hermes WebUI Desktop")
         .about(None)
         .separator()
+        .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?)
+        .separator()
         .item(
             &MenuItemBuilder::with_id("preferences", "Preferences…")
                 .accelerator("CmdOrCtrl+,")
@@ -147,6 +149,7 @@ pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &MenuItemBuilder::with_id("about_version", format!("Hermes WebUI Desktop v{version}"))
                 .enabled(false)
                 .build(app)?,
+            &item("check_updates", "Check for Updates…")?,
             &item("quit", "Quit")?,
         ],
     )

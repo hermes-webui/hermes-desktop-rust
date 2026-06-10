@@ -67,6 +67,11 @@ Tailscale IP, reverse proxy, custom port — set it as the Target URL in Direct 
 - **Summon hotkey** — `Cmd/Ctrl+Shift+H` brings Hermes to front from anywhere.
 - **Safe navigation** — only your Hermes origin loads inside the app; external links
   open in your browser; `file://` is blocked.
+- **Auto-update** — the app checks GitHub Releases shortly after launch and on
+  "Check for Updates…" (app menu on macOS, ⋯ menu on Windows/Linux), verifies the
+  download against a pinned signing key, installs, and relaunches. Covers the
+  Windows installer builds, the Linux AppImage, and macOS; `.deb` installs are
+  notified to grab the new package manually.
 - **Zoom** (`Cmd/Ctrl` `+`/`−`/`0`, persisted), window frame/fullscreen restore,
   single-instance.
 

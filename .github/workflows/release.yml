@@ -71,6 +71,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater artifact signing (minisign). Key generated 2026-06-10;
+          # LOSING IT BREAKS AUTO-UPDATE for every installed copy — backups
+          # live outside the repo (see RELEASING.md § updater key).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS signing + notarization (currently DISABLED — DMG ships
           # unsigned; README documents the Gatekeeper bypass). To enable:
           # add these repo secrets in the tauri-action format
@@ -89,4 +94,5 @@ jobs:
           releaseBody: ${{ needs.changelog.outputs.body }}
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}

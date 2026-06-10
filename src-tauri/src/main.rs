@@ -12,6 +12,7 @@ mod state;
 mod strip;
 mod theme;
 mod tunnel;
+mod updater;
 mod windows;
 
 use state::AppState;
@@ -137,6 +138,9 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -185,6 +189,16 @@ fn main() {
                 }
             }
             conn::reconnect(&handle);
+            // Passive update check shortly after launch (Sparkle parity) —
+            // never blocks startup; only surfaces a dialog when an update
+            // actually exists.
+            {
+                let update_handle = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    updater::spawn_check(&update_handle, false);
+                });
+            }
             // Chrome poller — the Tauri stand-in for the Swift app's
             // tabbedWindows KVO: keeps webview layout + tabbed class +
             // traffic-light var in sync with native tab-bar/fullscreen
@@ -207,6 +221,7 @@ fn main() {
             "paste" => paste::paste_into_focused(app),
             "reload" => windows::active_content_eval(app, "location.reload();"),
             "quit" => app.exit(0),
+            "check_updates" => updater::spawn_check(app, true),
             "zoom_in" => menu::zoom_step(app, 0.1),
             "zoom_out" => menu::zoom_step(app, -0.1),
             "zoom_reset" => menu::zoom_reset(app),

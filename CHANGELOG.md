@@ -1,5 +1,24 @@
 # Changelog
 
+## [v0.3.0] — 2026-06-10
+
+### Added
+
+- **Auto-update** (the Sparkle-parity feature). The app now checks GitHub Releases
+  about ten seconds after launch — silently unless an update actually exists — and
+  on demand via **Check for Updates…** (app menu on macOS, the tab bar's ⋯ menu on
+  Windows/Linux). When a new version is found you get a native "Install and
+  Relaunch / Later" prompt; the download is verified against a signing key pinned
+  in the app before anything is installed. Coverage: Windows installer builds
+  (the installer runs and relaunches), Linux **AppImage** (replaced in place),
+  and macOS (.app replaced in place). `.deb` installs can't self-update by design —
+  the interactive check tells those users to grab the new package from Releases.
+  Release builds now ship signed updater artifacts and a `latest.json` manifest;
+  because releases are published from drafts, installed apps only ever see
+  smoke-tested builds. **This release is the first carrying the manifest, so
+  v0.3.0 is the last manual download — every release after this arrives
+  in-app.**
+
 ## [v0.2.0] — 2026-06-10
 
 ### Added

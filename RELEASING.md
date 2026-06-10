@@ -68,6 +68,28 @@ git tag v0.2.0 && git push origin v0.2.0
 The draft release is reused; stale assets are replaced. Never move a tag that has
 already been **published** — cut a patch release instead.
 
+## The updater signing key (CRITICAL — do not lose)
+
+Releases are auto-update capable from v0.3.0: tauri-action signs every artifact with
+the minisign key in the repo secrets (`TAURI_SIGNING_PRIVATE_KEY` +
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) and uploads `latest.json`; installed apps
+check `releases/latest/download/latest.json` ~10s after launch and via
+"Check for Updates…".
+
+- **Losing the private key or password breaks auto-update for every installed
+  copy** (users must manually reinstall once with a new key). The key + password
+  live in the repo secrets and in the maintainer's `internal/secrets/` working
+  folder — back both files up to a password manager.
+- The public key is committed in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+- Rotation (if compromised): generate a new pair (`npx tauri signer generate`),
+  update pubkey + secrets, ship one release signed with the new key ASAP, and post
+  a notice — apps on the old pubkey will reject new updates and need a manual
+  download once.
+- Coverage: Windows `.exe`/`.msi` and Linux **AppImage** self-update; `.deb`
+  installs get a pointer to Releases; macOS `.app` updates in place.
+- The draft-release flow still applies: `latest.json` only goes live when the
+  release is **published**, so installed apps never see an unsmoked build.
+
 ## Enabling macOS signing + notarization (when ready)
 
 Add fresh repo secrets in
