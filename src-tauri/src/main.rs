@@ -210,6 +210,10 @@ fn main() {
                 let app = window.app_handle();
                 windows::forget(app, window.label());
                 windows::refresh_macos_chrome(app);
+                // Win/Linux (D11): quit when the USER closed the last
+                // meaningful window — never during the orchestrator's
+                // rebuild gaps (it sets `connecting` while windows churn).
+                windows::maybe_quit_after_close(app);
             }
             tauri::WindowEvent::Resized(_) => {
                 let app = window.app_handle();
@@ -228,16 +232,17 @@ fn main() {
         .expect("error while building Hermes WebUI Desktop")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
-                // macOS: app stays alive in the Dock when the last window
-                // hides; only explicit Quit (code set) exits.
-                #[cfg(target_os = "macos")]
-                {
-                    if code.is_none() {
-                        api.prevent_exit();
-                    }
+                // ALL platforms: a code-less exit request means "the last
+                // window was destroyed" — which also happens transiently
+                // inside the connection flow (splash destroyed before the
+                // error/main window exists). Letting it through killed the
+                // app right after the splash on Windows (v0.1.0 bug).
+                // Explicit quits call app.exit(code) and pass through;
+                // Win/Linux close-last-window-quits is implemented
+                // deliberately in windows::maybe_quit_after_close.
+                if code.is_none() {
+                    api.prevent_exit();
                 }
-                #[cfg(not(target_os = "macos"))]
-                let _ = (code, api);
             }
             tauri::RunEvent::Exit => {
                 tunnel::stop(app);

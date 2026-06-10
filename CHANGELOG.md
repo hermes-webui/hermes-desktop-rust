@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.1.1] — 2026-06-10
+
+### Fixed
+
+- **Windows/Linux: app exited immediately after the splash screen — nothing ever
+  appeared** (first-run report: "showed a spinning loading thing and then
+  disappeared"). The connection flow destroys the splash window an instant before
+  it creates the browser or error window; during that window-less instant Tauri's
+  default "all windows closed → exit" behavior killed the process, so neither the
+  error screen (no server running) nor the main window (server running) ever
+  appeared. macOS was unaffected only because it already suppressed that exit for
+  its keep-running-in-Dock semantics. The exit request is now suppressed on every
+  platform, and Windows/Linux "closing the last window quits the app" is
+  implemented explicitly instead: the app exits only when a window is closed while
+  the connection flow is idle and no browser, error, preferences, or splash window
+  remains — user-initiated closes quit exactly as before, internal window churn
+  never does.
+
 ## [v0.1.0] — 2026-06-10
 
 First public build. Cross-platform (macOS / Windows / Linux) Tauri 2 desktop shell

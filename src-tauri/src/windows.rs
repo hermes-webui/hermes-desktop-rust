@@ -427,6 +427,31 @@ pub fn show_most_recent(app: &AppHandle) {
     }
 }
 
+/// Windows/Linux last-window-quit (D11), called on every window Destroyed.
+/// Quits only when no meaningful window remains AND the connection
+/// orchestrator isn't mid-rebuild — its splash→error/main gaps must never
+/// kill the app (the v0.1.0 "splash then nothing" Windows bug). macOS keeps
+/// running with Dock semantics instead.
+pub fn maybe_quit_after_close(app: &AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let state = app.state::<AppState>();
+        if state.connecting.load(Ordering::SeqCst) {
+            return;
+        }
+        let any_alive = !content_windows(app).is_empty()
+            || app.get_webview_window("error").is_some()
+            || app.get_webview_window("prefs").is_some()
+            || app.get_webview_window("splash").is_some();
+        if !any_alive {
+            log::info!("windows: last window closed — exiting");
+            app.exit(0);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app;
+}
+
 // ---- Shell windows ----
 
 pub fn show_splash(app: &AppHandle, _p: &prefs::Prefs) {
