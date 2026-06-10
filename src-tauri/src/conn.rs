@@ -158,16 +158,23 @@ fn start_recovery_loop(app: &AppHandle, target: String) {
 }
 
 /// Guarded entry for New Window / New Tab (port of openNewBrowserSession).
+/// Runs on a worker thread: window creation must never happen synchronously
+/// on the main thread inside a command/event handler — on Windows that
+/// stalls WebView2 initialization and the window never paints (same bug
+/// class as the v0.1.1 prefs-window report).
 pub fn open_new_session(app: &AppHandle, as_tab: bool) {
-    let p = prefs::load(app);
-    if p.connection_mode == "ssh"
-        && tunnel::current_status(app) != crate::state::TunnelStatus::Connected
-    {
-        return;
-    }
-    if p.connection_mode == "direct" && windows::content_windows(app).is_empty() {
-        reconnect(app);
-        return;
-    }
-    windows::open_browser(app, &p, as_tab);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let p = prefs::load(&app);
+        if p.connection_mode == "ssh"
+            && tunnel::current_status(&app) != crate::state::TunnelStatus::Connected
+        {
+            return;
+        }
+        if p.connection_mode == "direct" && windows::content_windows(&app).is_empty() {
+            reconnect(&app);
+            return;
+        }
+        windows::open_browser(&app, &p, as_tab);
+    });
 }

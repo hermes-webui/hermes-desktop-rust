@@ -494,13 +494,25 @@ pub fn open_prefs(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, "prefs", WebviewUrl::App("prefs.html".into()))
-        .title("Preferences")
-        .inner_size(520.0, 640.0)
-        .resizable(false)
-        .theme(Some(cached_theme(app)))
-        .center()
-        .build();
+    // Build OFF the calling thread. On Windows, creating a WebView2 webview
+    // synchronously inside an IPC command (which runs on the main thread)
+    // stalls its initialization — the window appears but never paints
+    // (v0.1.1 report: "prefs window didn't render", showing only a blurred
+    // DWM backdrop). Every other window is already built from a worker
+    // thread; this one must be too.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if app.get_webview_window("prefs").is_some() {
+            return;
+        }
+        let _ = WebviewWindowBuilder::new(&app, "prefs", WebviewUrl::App("prefs.html".into()))
+            .title("Preferences")
+            .inner_size(520.0, 640.0)
+            .resizable(false)
+            .theme(Some(cached_theme(&app)))
+            .center()
+            .build();
+    });
 }
 
 #[cfg(test)]

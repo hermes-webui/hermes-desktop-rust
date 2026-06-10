@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.1.2] — 2026-06-10
+
+### Fixed
+
+- **Windows: the Preferences window opened blank and never rendered** (report:
+  "prefs window didn't render" — the window showed only a blurred glimpse of
+  whatever sat behind it). The `open_preferences` command created the webview
+  window synchronously on the main thread; on Windows, WebView2 initialization
+  needs the message loop to keep pumping, so a webview created from inside a
+  blocking IPC command stalls forever and its window never paints — it just
+  exposes the DWM backdrop. Every working window (splash, error, browser) was
+  already being created from a background thread; the Preferences window (and the
+  Ctrl+T / Ctrl+N new-tab/new-window paths, which had the same latent bug) now do
+  the same. macOS never reproduced this because WKWebView doesn't depend on the
+  Win32 message pump.
+
 ## [v0.1.1] — 2026-06-10
 
 ### Fixed
