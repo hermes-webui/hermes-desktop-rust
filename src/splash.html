@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="shared/shell.css" />
+    <style>
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        height: 100vh;
+      }
+      h1 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 0;
+      }
+      p {
+        margin: 0;
+        color: var(--hermes-fg-secondary);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body data-tauri-drag-region>
+    <div class="spinner" data-tauri-drag-region></div>
+    <h1 data-tauri-drag-region>Hermes WebUI Desktop</h1>
+    <p id="subtitle" data-tauri-drag-region>Connecting…</p>
+    <script src="shared/shell.js"></script>
+    <script>
+      hermes.invoke("get_boot_info").then((info) => {
+        hermes.applyBootTheme(info);
+        document.getElementById("subtitle").textContent =
+          info.mode === "ssh" ? "Establishing SSH tunnel…" : "Connecting…";
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "content-windows",
+  "description": "Minimal IPC for remote hermes-webui content webviews: injected bridge scripts may only emit events",
+  "windows": ["main-*"],
+  "remote": {
+    "urls": [
+      "http://localhost",
+      "http://localhost:*",
+      "http://127.0.0.1",
+      "http://127.0.0.1:*",
+      "https://*",
+      "https://*:*"
+    ]
+  },
+  "permissions": [
+    "core:event:default"
+  ]
+}

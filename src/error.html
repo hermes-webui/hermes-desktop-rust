@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="shared/shell.css" />
+    <style>
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        height: 100vh;
+        padding: 24px;
+        text-align: center;
+      }
+      .icon {
+        font-size: 34px;
+      }
+      h1 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+      }
+      p {
+        margin: 0;
+        color: var(--hermes-fg-secondary);
+        font-size: 12px;
+        max-width: 380px;
+      }
+      .hint {
+        font-size: 11px;
+        max-width: 400px;
+        user-select: text;
+        cursor: text;
+      }
+      .buttons {
+        display: flex;
+        gap: 10px;
+        margin-top: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="icon">⚠️</div>
+    <h1>Can’t reach Hermes</h1>
+    <p id="detail">Checking connection details…</p>
+    <p class="hint" id="hint"></p>
+    <div class="buttons">
+      <button id="prefs">Open Preferences…</button>
+      <button id="retry" class="primary">Retry</button>
+    </div>
+    <script src="shared/shell.js"></script>
+    <script>
+      hermes.invoke("get_boot_info").then((info) => {
+        hermes.applyBootTheme(info);
+        document.getElementById("detail").textContent =
+          info.mode === "ssh"
+            ? `Couldn’t establish the SSH tunnel to ${info.sshUser}@${info.sshHost}.`
+            : `Couldn’t connect to ${info.target}.`;
+        if (info.errorHint) {
+          document.getElementById("hint").textContent = info.errorHint;
+        }
+      });
+      document.getElementById("retry").addEventListener("click", () => {
+        document.getElementById("retry").textContent = "Retrying…";
+        hermes.invoke("retry_connect");
+      });
+      document.getElementById("prefs").addEventListener("click", () => {
+        hermes.invoke("open_preferences");
+      });
+    </script>
+  </body>
+</html>

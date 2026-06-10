@@ -1,0 +1,215 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="shared/shell.css" />
+    <style>
+      body {
+        padding: 22px 24px 16px;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      .section {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        color: var(--hermes-fg-secondary);
+        margin: 14px 0 8px;
+      }
+      .section:first-child {
+        margin-top: 0;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .row label {
+        text-align: right;
+        color: var(--hermes-fg);
+      }
+      .row .narrow {
+        width: 90px;
+      }
+      .segment {
+        display: inline-flex;
+        border: 1px solid var(--hermes-border);
+        border-radius: 7px;
+        overflow: hidden;
+      }
+      .segment button {
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        padding: 4px 14px;
+      }
+      .segment button.active {
+        background: var(--hermes-accent);
+        color: #fff;
+      }
+      .checkbox-row {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .checkbox-row label {
+        display: flex;
+        gap: 7px;
+        align-items: flex-start;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .checkbox-row input {
+        margin-top: 2px;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid var(--hermes-border);
+        margin: 6px 0 12px;
+      }
+      .footer {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding-top: 14px;
+      }
+      #testResult {
+        font-size: 11px;
+        color: var(--hermes-fg-secondary);
+      }
+      #testResult.ok {
+        color: var(--hermes-ok);
+      }
+      #testResult.fail {
+        color: var(--hermes-danger);
+      }
+      .spacer {
+        flex: 1;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="section">CONNECTION MODE</div>
+    <div class="row">
+      <label>Mode</label>
+      <div class="segment">
+        <button id="modeDirect">Direct (Local)</button>
+        <button id="modeSSH">SSH Tunnel</button>
+      </div>
+    </div>
+    <hr class="ssh" />
+    <div class="section ssh">SSH CONNECTION</div>
+    <div class="row ssh">
+      <label>Username</label>
+      <input type="text" id="sshUser" placeholder="hermes" />
+    </div>
+    <div class="row ssh">
+      <label>Host</label>
+      <input type="text" id="sshHost" placeholder="your-server.com" />
+    </div>
+    <hr class="ssh" />
+    <div class="section ssh">PORT FORWARDING</div>
+    <div class="row ssh">
+      <label>Local port</label>
+      <input type="text" id="localPort" class="narrow" placeholder="8787" />
+    </div>
+    <div class="row ssh">
+      <label>Remote port</label>
+      <input type="text" id="remotePort" class="narrow" placeholder="8787" />
+    </div>
+    <hr />
+    <div class="section">APP</div>
+    <div class="row">
+      <label>Target URL</label>
+      <input type="text" id="targetURL" placeholder="http://localhost:8787" />
+    </div>
+    <div class="checkbox-row">
+      <span></span>
+      <label>
+        <input type="checkbox" id="notifications" />
+        Show a notification when a response completes while the app is in the
+        background
+      </label>
+    </div>
+    <div class="footer">
+      <button id="test">Test Connection</button>
+      <span id="testResult"></span>
+      <span class="spacer"></span>
+      <button id="cancel">Cancel</button>
+      <button id="save" class="primary">Save &amp; Reconnect</button>
+    </div>
+    <script src="shared/shell.js"></script>
+    <script>
+      let mode = "direct";
+
+      function applyMode() {
+        document.getElementById("modeDirect").classList.toggle("active", mode === "direct");
+        document.getElementById("modeSSH").classList.toggle("active", mode === "ssh");
+        document
+          .querySelectorAll(".ssh")
+          .forEach((el) => el.classList.toggle("hidden", mode === "direct"));
+      }
+
+      hermes.invoke("get_prefs").then((p) => {
+        mode = p.connectionMode === "ssh" ? "ssh" : "direct";
+        document.getElementById("sshUser").value = p.sshUser || "";
+        document.getElementById("sshHost").value = p.sshHost || "";
+        document.getElementById("localPort").value = p.localPort || "8787";
+        document.getElementById("remotePort").value = p.remotePort || "8787";
+        document.getElementById("targetURL").value = p.targetURL || "http://localhost:8787";
+        document.getElementById("notifications").checked = !!p.notificationsEnabled;
+        applyMode();
+      });
+      hermes.invoke("get_boot_info").then((info) => hermes.applyBootTheme(info));
+
+      document.getElementById("modeDirect").addEventListener("click", () => {
+        mode = "direct";
+        applyMode();
+      });
+      document.getElementById("modeSSH").addEventListener("click", () => {
+        mode = "ssh";
+        applyMode();
+      });
+
+      document.getElementById("test").addEventListener("click", async () => {
+        const r = document.getElementById("testResult");
+        r.className = "";
+        r.textContent = "Testing…";
+        const url =
+          document.getElementById("targetURL").value.trim() || "http://localhost:8787";
+        const ok = await hermes.invoke("test_connection", { url });
+        r.textContent = ok ? "✓ Connected" : "✗ Unreachable";
+        r.className = ok ? "ok" : "fail";
+      });
+
+      document.getElementById("save").addEventListener("click", async () => {
+        const newPrefs = {
+          connectionMode: mode,
+          targetURL: document.getElementById("targetURL").value.trim(),
+          sshUser: document.getElementById("sshUser").value.trim(),
+          sshHost: document.getElementById("sshHost").value.trim(),
+          localPort: document.getElementById("localPort").value.trim(),
+          remotePort: document.getElementById("remotePort").value.trim(),
+          notificationsEnabled: document.getElementById("notifications").checked,
+        };
+        try {
+          await hermes.invoke("set_prefs", { newPrefs });
+        } catch (err) {
+          alert(typeof err === "string" ? err : "Invalid settings.");
+        }
+      });
+
+      document.getElementById("cancel").addEventListener("click", () => {
+        hermes.invoke("close_prefs");
+      });
+    </script>
+  </body>
+</html>

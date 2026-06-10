@@ -1,0 +1,89 @@
+name: Build and Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.extract.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract changelog entry for this tag
+        id: extract
+        run: |
+          python3 scripts/extract_changelog.py "${GITHUB_REF_NAME}" > body.md \
+            || echo "See CHANGELOG.md for details." > body.md
+          {
+            echo "body<<CHANGELOG_EOF"
+            cat body.md
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: changelog
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            args: "--target universal-apple-darwin"
+          - platform: windows-2022
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS builds a universal binary — both targets needed there.
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Tauri CLI
+        run: npm install
+
+      - name: Build and upload release artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization activate automatically once these
+          # secrets exist on the repo/org (same set hermes-swift-mac uses).
+          # Without them the DMG ships unsigned (documented in the README).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Hermes WebUI Desktop ${{ github.ref_name }}"
+          releaseBody: ${{ needs.changelog.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

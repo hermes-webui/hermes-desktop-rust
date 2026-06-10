@@ -1,0 +1,79 @@
+/* Shared shell-page styles. Dark-first (matches the app's pre-paint default);
+   follows the page theme via the theme-changed event → --hermes-bg. */
+:root {
+  --hermes-bg: #1a1a1a;
+  --hermes-fg: rgba(255, 255, 255, 0.88);
+  --hermes-fg-secondary: rgba(255, 255, 255, 0.55);
+  --hermes-border: rgba(255, 255, 255, 0.14);
+  --hermes-accent: #4f8cff;
+  --hermes-control-bg: rgba(255, 255, 255, 0.07);
+  --hermes-danger: #ff453a;
+  --hermes-ok: #32d74b;
+}
+:root.light {
+  --hermes-fg: rgba(0, 0, 0, 0.85);
+  --hermes-fg-secondary: rgba(0, 0, 0, 0.5);
+  --hermes-border: rgba(0, 0, 0, 0.12);
+  --hermes-control-bg: rgba(0, 0, 0, 0.05);
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--hermes-bg);
+  color: var(--hermes-fg);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI",
+    system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+button {
+  font: inherit;
+  color: var(--hermes-fg);
+  background: var(--hermes-control-bg);
+  border: 1px solid var(--hermes-border);
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+button:hover {
+  filter: brightness(1.15);
+}
+button.primary {
+  background: var(--hermes-accent);
+  border-color: transparent;
+  color: #fff;
+}
+input[type="text"] {
+  font: inherit;
+  color: var(--hermes-fg);
+  background: var(--hermes-control-bg);
+  border: 1px solid var(--hermes-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  width: 100%;
+  user-select: text;
+}
+input[type="text"]:focus {
+  outline: 2px solid var(--hermes-accent);
+  outline-offset: -1px;
+}
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--hermes-border);
+  border-top-color: var(--hermes-fg-secondary);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

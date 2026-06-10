@@ -1,0 +1,23 @@
+# Internal planning docs — never committed
+internal/
+
+# Rust / Tauri build output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node (Tauri CLI only)
+node_modules/
+
+# OS noise
+.DS_Store
+
+# Local agent workspaces
+.claude/
+
+# Bundles / artifacts built locally
+*.dmg
+*.app.tar.gz
+*.AppImage
+*.deb
+*.msi
+*-setup.exe
