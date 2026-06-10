@@ -222,6 +222,20 @@ fn main() {
             "reload" => windows::active_content_eval(app, "location.reload();"),
             "quit" => app.exit(0),
             "check_updates" => updater::spawn_check(app, true),
+            "reveal_logs" => {
+                // The #1 support tool — testers needed the log path twice on
+                // day one. Reveals the live log in Finder/Explorer/Files.
+                if let Ok(dir) = app.path().app_log_dir() {
+                    let file = dir.join("hermes-webui-desktop.log");
+                    let target = if file.exists() { file } else { dir };
+                    if tauri_plugin_opener::reveal_item_in_dir(&target).is_err() {
+                        let _ = tauri_plugin_opener::open_path(
+                            target.to_string_lossy().to_string(),
+                            None::<&str>,
+                        );
+                    }
+                }
+            }
             "zoom_in" => menu::zoom_step(app, 0.1),
             "zoom_out" => menu::zoom_step(app, -0.1),
             "zoom_reset" => menu::zoom_reset(app),

@@ -9,6 +9,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .about(None)
         .separator()
         .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?)
+        .item(&MenuItemBuilder::with_id("reveal_logs", "Reveal Log File").build(app)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id("preferences", "Preferences…")
@@ -150,6 +151,7 @@ pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .enabled(false)
                 .build(app)?,
             &item("check_updates", "Check for Updates…")?,
+            &item("reveal_logs", "Reveal Log File")?,
             &item("quit", "Quit")?,
         ],
     )
