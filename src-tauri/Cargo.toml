@@ -1,6 +1,6 @@
 [package]
 name = "hermes-webui-desktop"
-version = "0.1.2"
+version = "0.2.0"
 description = "Hermes WebUI Desktop — cross-platform shell for hermes-webui"
 edition = "2021"
 license = "MIT"
@@ -9,7 +9,9 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `unstable` = multi-webview (the Windows/Linux tab strip: one window hosting
+# a strip webview + N content webviews). Retest the strip on tauri bumps.
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-store = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"

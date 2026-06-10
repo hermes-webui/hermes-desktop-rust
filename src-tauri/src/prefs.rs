@@ -62,6 +62,19 @@ fn get_bool(app: &AppHandle, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Write the full default set on first-ever launch (Swift seedDefaultsIfNeeded
+/// parity) — so prefs.json shows the real schema instead of "{}".
+pub fn seed_if_needed(app: &AppHandle) {
+    let seeded = app
+        .store(STORE_FILE)
+        .ok()
+        .map(|s| s.get("connectionMode").is_some())
+        .unwrap_or(false);
+    if !seeded {
+        save(app, &Prefs::default());
+    }
+}
+
 pub fn load(app: &AppHandle) -> Prefs {
     let d = Prefs::default();
     Prefs {

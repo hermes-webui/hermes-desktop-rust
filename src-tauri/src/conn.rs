@@ -46,7 +46,7 @@ fn run(app: &AppHandle) {
     // Reuse-vs-rebuild (fix #10 in the Swift app): same-mode reconnects keep
     // every webview alive (cookies, scroll, in-flight chat); a mode switch
     // rebuilds because the footer chrome differs.
-    let content = windows::content_windows(app);
+    let content = windows::content_window_handles(app);
     let reuse = !content.is_empty() && windows::all_modes_match(app, &p.connection_mode);
     if reuse {
         for w in &content {
@@ -55,6 +55,7 @@ fn run(app: &AppHandle) {
     } else {
         for w in &content {
             windows::forget(app, w.label());
+            crate::strip::forget_window(app, w.label());
             let _ = w.destroy();
         }
     }
@@ -80,9 +81,9 @@ fn run(app: &AppHandle) {
 
     if ok {
         if reuse {
-            let content = windows::content_windows(app);
+            windows::eval_all_content(app, "location.reload();");
+            let content = windows::content_window_handles(app);
             for w in &content {
-                let _ = w.eval("location.reload();");
                 let _ = w.show();
             }
             if let Some(last) = content.last() {
@@ -97,8 +98,9 @@ fn run(app: &AppHandle) {
         }
         log::info!("conn: connected");
     } else {
-        for w in windows::content_windows(app) {
+        for w in windows::content_window_handles(app) {
             windows::forget(app, w.label());
+            crate::strip::forget_window(app, w.label());
             let _ = w.destroy();
         }
         windows::show_error(app, &p);
@@ -130,6 +132,9 @@ fn start_health_loop(app: &AppHandle, target: String) {
             log::info!("health: {} -> {}", was, healthy);
             windows::set_offline_badge(&app, !healthy);
             windows::refresh_all_titles(&app);
+            // Strip pages (Windows/Linux) show the health dot from this event.
+            use tauri::Emitter;
+            let _ = app.emit("health-changed", serde_json::json!({ "healthy": healthy }));
         }
     });
 }
@@ -171,9 +176,16 @@ pub fn open_new_session(app: &AppHandle, as_tab: bool) {
         {
             return;
         }
-        if p.connection_mode == "direct" && windows::content_windows(&app).is_empty() {
+        if p.connection_mode == "direct" && windows::content_window_handles(&app).is_empty() {
             reconnect(&app);
             return;
+        }
+        // Strip mode: "new tab" adds a tab to the focused window's strip.
+        if as_tab && crate::strip::enabled() {
+            if let Some(win) = windows::focused_or_recent_window_handle(&app) {
+                crate::strip::add_tab(&app, win.label());
+                return;
+            }
         }
         windows::open_browser(&app, &p, as_tab);
     });

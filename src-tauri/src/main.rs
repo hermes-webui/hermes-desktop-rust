@@ -9,6 +9,7 @@ mod menu;
 mod paste;
 mod prefs;
 mod state;
+mod strip;
 mod theme;
 mod tunnel;
 mod windows;
@@ -55,6 +56,46 @@ fn open_preferences(app: tauri::AppHandle) {
 fn close_prefs(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("prefs") {
         let _ = w.destroy();
+    }
+}
+
+// ---- Strip-mode (Windows/Linux tab bar) commands. Mutating ops run on a
+// worker thread: webview creation/destruction must stay off the main thread
+// inside commands (CLAUDE.md invariant #9). ----
+
+#[tauri::command]
+fn tabs_snapshot(app: tauri::AppHandle, window: String) -> serde_json::Value {
+    strip::snapshot(&app, &window)
+}
+
+#[tauri::command]
+fn tab_new(app: tauri::AppHandle, window: String) {
+    std::thread::spawn(move || strip::add_tab(&app, &window));
+}
+
+#[tauri::command]
+fn tab_select(app: tauri::AppHandle, window: String, tab: String) {
+    std::thread::spawn(move || strip::select_tab(&app, &window, &tab));
+}
+
+#[tauri::command]
+fn tab_close(app: tauri::AppHandle, window: String, tab: String) {
+    std::thread::spawn(move || strip::close_tab(&app, &window, &tab));
+}
+
+#[tauri::command]
+fn new_window_cmd(app: tauri::AppHandle) {
+    conn::open_new_session(&app, false);
+}
+
+#[tauri::command]
+fn strip_menu(app: tauri::AppHandle, window: String) {
+    use tauri::menu::ContextMenu;
+    let Some(win) = app.windows().get(&window).cloned() else {
+        return;
+    };
+    if let Ok(menu) = menu::build_strip_menu(&app) {
+        let _ = menu.popup(win);
     }
 }
 
@@ -113,7 +154,13 @@ fn main() {
             retry_connect,
             open_preferences,
             close_prefs,
-            get_boot_info
+            get_boot_info,
+            tabs_snapshot,
+            tab_new,
+            tab_select,
+            tab_close,
+            new_window_cmd,
+            strip_menu
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -122,6 +169,7 @@ fn main() {
             // defaults dark). Without this, the chrome (menus, native tab
             // bar) follows the OS appearance instead of the page theme.
             handle.set_theme(Some(windows::cached_theme(&handle)));
+            prefs::seed_if_needed(&handle);
             #[cfg(target_os = "macos")]
             {
                 let m = menu::build(&handle)?;
@@ -157,29 +205,23 @@ fn main() {
             "new_window" => conn::open_new_session(app, false),
             "new_tab" => conn::open_new_session(app, true),
             "paste" => paste::paste_into_focused(app),
-            "reload" => {
-                if let Some(w) = windows::focused_or_recent_content(app) {
-                    let _ = w.eval("location.reload();");
-                }
-            }
+            "reload" => windows::active_content_eval(app, "location.reload();"),
+            "quit" => app.exit(0),
             "zoom_in" => menu::zoom_step(app, 0.1),
             "zoom_out" => menu::zoom_step(app, -0.1),
             "zoom_reset" => menu::zoom_reset(app),
-            "find" => {
-                if let Some(w) = windows::focused_or_recent_content(app) {
-                    let _ = w.eval("window.__hermesFindToggle && window.__hermesFindToggle();");
-                }
-            }
-            "find_next" => {
-                if let Some(w) = windows::focused_or_recent_content(app) {
-                    let _ = w.eval("window.__hermesFindNext && window.__hermesFindNext(true);");
-                }
-            }
-            "find_prev" => {
-                if let Some(w) = windows::focused_or_recent_content(app) {
-                    let _ = w.eval("window.__hermesFindNext && window.__hermesFindNext(false);");
-                }
-            }
+            "find" => windows::active_content_eval(
+                app,
+                "window.__hermesFindToggle && window.__hermesFindToggle();",
+            ),
+            "find_next" => windows::active_content_eval(
+                app,
+                "window.__hermesFindNext && window.__hermesFindNext(true);",
+            ),
+            "find_prev" => windows::active_content_eval(
+                app,
+                "window.__hermesFindNext && window.__hermesFindNext(false);",
+            ),
             "open_browser" => {
                 let url = prefs::load(app).target_url;
                 let _ = tauri_plugin_opener::open_url(url, None::<&str>);
@@ -209,6 +251,7 @@ fn main() {
             tauri::WindowEvent::Destroyed => {
                 let app = window.app_handle();
                 windows::forget(app, window.label());
+                strip::forget_window(app, window.label());
                 windows::refresh_macos_chrome(app);
                 // Win/Linux (D11): quit when the USER closed the last
                 // meaningful window — never during the orchestrator's
@@ -221,6 +264,10 @@ fn main() {
                 // Resize can change contentLayoutRect (fullscreen toggles,
                 // tab bar transitions) — recompute (Swift windowDidResize).
                 windows::refresh_macos_chrome(app);
+                // Strip mode: re-fit the strip + active tab webview bounds.
+                if strip::enabled() && window.label().starts_with("main-") {
+                    strip::layout(app, window.label());
+                }
             }
             tauri::WindowEvent::Moved(_) => {
                 let app = window.app_handle();

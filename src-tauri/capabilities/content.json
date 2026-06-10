@@ -3,6 +3,7 @@
   "identifier": "content-windows",
   "description": "Minimal IPC for remote hermes-webui content webviews: injected bridge scripts may only emit events",
   "windows": ["main-*"],
+  "webviews": ["main-*", "tab-*"],
   "remote": {
     "urls": [
       "http://localhost",

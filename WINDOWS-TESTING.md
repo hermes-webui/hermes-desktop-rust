@@ -23,7 +23,12 @@ The app needs a running hermes-webui. Three setups:
 | hermes-webui on a remote server | Press `Ctrl+,` → switch Mode to **SSH Tunnel** → enter username + host + ports → Save & Reconnect. **Key-based SSH auth is required** (no password prompts): make sure `ssh user@host` works from PowerShell without typing a password first (`ssh-agent` + `ssh-add`) |
 | No server anywhere | The app will show the "Can't reach Hermes" window — that's working as intended; it retries automatically once a server appears on the target URL |
 
-## Shortcuts
+## Tabs, windows & shortcuts
+
+Each window has a **tab bar**: the **＋** button or `Ctrl+T` opens a tab,
+`Ctrl+Tab` / `Ctrl+Shift+Tab` cycle, middle-click or the hover **×** (or `Ctrl+W`)
+closes, and the **⋯** menu lists everything else. Every tab is its own live session
+view — switching never reloads or interrupts a streaming response.
 
 `Ctrl+,` preferences · `Ctrl+N` new window · `Ctrl+R` reload · `Ctrl+F` find in page
 (`Enter`/`Shift+Enter` next/prev, `Esc` closes) · `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom ·
@@ -32,8 +37,6 @@ chat composer with `Ctrl+V`.
 
 ## Known gaps in this build (don't file these)
 
-- No tab strip yet on Windows — `Ctrl+T`/`Ctrl+N` both open a separate window (the
-  tabbed UI is a later milestone; macOS uses native tabs already).
 - Unsigned binary (SmartScreen, some AVs may grumble).
 - No auto-update; new builds are shared manually.
 - Closing the last window quits the app (by design on Windows).

@@ -53,7 +53,10 @@ Tailscale IP, reverse proxy, custom port — set it as the Target URL in Direct 
   indicator) and SSH Tunnel (status footer, reconnect button, actionable error
   hints parsed from ssh itself).
 - **Tabs & windows** — native macOS tab groups (`Cmd+T`, drag to reorder/detach);
-  multi-window everywhere (`Cmd/Ctrl+N`). Tab titles follow your conversation names.
+  a browser-style tab bar on Windows/Linux (`Ctrl+T`, `Ctrl+Tab` cycling,
+  middle-click close, ＋ and ⋯ controls); multi-window everywhere (`Cmd/Ctrl+N`).
+  Tab titles follow your conversation names; every tab is a live session view, so
+  switching tabs never interrupts a streaming response.
 - **Theme-matched chrome** — the window borders/titlebar/tab bar follow the web UI's
   theme (all 11+ hermes-webui skins), with a cached color so every launch and new
   tab paints correctly from the first frame. No white flashes.

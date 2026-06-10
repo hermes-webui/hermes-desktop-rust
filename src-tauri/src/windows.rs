@@ -2,9 +2,9 @@
 //! Mirrors AppDelegate/BrowserWindowController behaviors (docs/03).
 
 use crate::state::{AppState, TunnelStatus};
-use crate::{bridge, prefs, theme};
+use crate::{bridge, prefs, strip, theme};
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const TABBING_ID: &str = "ai.get-hermes.HermesWebUIDesktop.main";
 
@@ -23,6 +23,67 @@ pub fn cached_theme(app: &AppHandle) -> tauri::Theme {
 }
 
 /// All live content (browser) windows, ordered by label sequence.
+/// Raw window handles for every content window, ordered by label sequence.
+/// Works in BOTH modes (macOS WebviewWindows and strip-mode multi-webview
+/// windows both appear in app.windows()) — use this for window-level ops
+/// (hide/show/destroy/count/position).
+pub fn content_window_handles(app: &AppHandle) -> Vec<tauri::Window> {
+    let mut wins: Vec<(u64, tauri::Window)> = app
+        .windows()
+        .into_iter()
+        .filter(|(label, _)| label.starts_with("main-"))
+        .map(|(label, w)| {
+            let n: u64 = label.trim_start_matches("main-").parse().unwrap_or(0);
+            (n, w)
+        })
+        .collect();
+    wins.sort_by_key(|(n, _)| *n);
+    wins.into_iter().map(|(_, w)| w).collect()
+}
+
+pub fn focused_or_recent_window_handle(app: &AppHandle) -> Option<tauri::Window> {
+    let wins = content_window_handles(app);
+    wins.iter()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .cloned()
+        .or_else(|| wins.last().cloned())
+}
+
+/// Evaluate JS in EVERY content webview (mac: one per window; strip: every tab).
+pub fn eval_all_content(app: &AppHandle, js: &str) {
+    if strip::enabled() {
+        for wv in strip::all_tab_webviews(app) {
+            let _ = wv.eval(js);
+        }
+    } else {
+        for w in content_windows(app) {
+            let _ = w.eval(js);
+        }
+    }
+}
+
+/// Evaluate JS in the ACTIVE content webview (focused window's visible tab).
+pub fn active_content_eval(app: &AppHandle, js: &str) {
+    if strip::enabled() {
+        if let Some(wv) = strip::focused_active_webview(app) {
+            let _ = wv.eval(js);
+        }
+    } else if let Some(w) = focused_or_recent_content(app) {
+        let _ = w.eval(js);
+    }
+}
+
+/// Set zoom on the active content webview.
+pub fn active_content_zoom(app: &AppHandle, zoom: f64) {
+    if strip::enabled() {
+        if let Some(wv) = strip::focused_active_webview(app) {
+            let _ = wv.set_zoom(zoom);
+        }
+    } else if let Some(w) = focused_or_recent_content(app) {
+        let _ = w.set_zoom(zoom);
+    }
+}
+
 pub fn content_windows(app: &AppHandle) -> Vec<WebviewWindow> {
     let mut wins: Vec<(u64, WebviewWindow)> = app
         .webview_windows()
@@ -62,6 +123,11 @@ pub fn forget(app: &AppHandle, label: &str) {
 /// Open a new browser window (a "tab" on macOS when as_tab and a window
 /// exists to join). Port of AppDelegate.openBrowser.
 pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<WebviewWindow> {
+    // Windows/Linux: strip mode (custom tab bar + one webview per tab).
+    if strip::enabled() {
+        strip::open_browser_window(app, p);
+        return None;
+    }
     let state = app.state::<AppState>();
     let n = state.window_seq.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("main-{n}");
@@ -236,7 +302,11 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
     Some(win)
 }
 
-fn navigation_allowed(app: &AppHandle, url: &url::Url, allowed_host: Option<&str>) -> bool {
+pub(crate) fn navigation_allowed(
+    app: &AppHandle,
+    url: &url::Url,
+    allowed_host: Option<&str>,
+) -> bool {
     let scheme = url.scheme();
     if scheme == "file" {
         return false;
@@ -265,6 +335,17 @@ fn navigation_allowed(app: &AppHandle, url: &url::Url, allowed_host: Option<&str
 /// Tunnel status fan-out: footer in every ssh window + dock badge.
 pub fn on_tunnel_status_changed(app: &AppHandle, status: TunnelStatus) {
     let p = prefs::load(app);
+    // Strip pages (Windows/Linux) render status from this event; the mac
+    // injected footer is driven by the evals below.
+    let state_str = match status {
+        TunnelStatus::Connecting => "connecting",
+        TunnelStatus::Connected => "connected",
+        TunnelStatus::Disconnected => "disconnected",
+    };
+    let _ = app.emit(
+        "tunnel-status",
+        serde_json::json!({ "state": state_str, "host": p.ssh_host, "port": p.local_port }),
+    );
     for w in content_windows(app) {
         push_tunnel_status(app, &w, status, &p.ssh_host, &p.local_port);
     }
@@ -347,6 +428,10 @@ pub fn refresh_title(app: &AppHandle, label: &str) {
 }
 
 pub fn refresh_all_titles(app: &AppHandle) {
+    if strip::enabled() {
+        strip::refresh_all_titles(app);
+        return;
+    }
     for w in content_windows(app) {
         refresh_title(app, w.label());
     }
@@ -405,7 +490,7 @@ pub fn persist_first_frame(app: &AppHandle, window: &tauri::Window) {
     if !window.label().starts_with("main-") {
         return;
     }
-    let wins = content_windows(app);
+    let wins = content_window_handles(app);
     let Some(first) = wins.first() else { return };
     if first.label() != window.label() {
         return;
@@ -448,7 +533,7 @@ pub fn maybe_quit_after_close(app: &AppHandle) {
         if state.connecting.load(Ordering::SeqCst) {
             return;
         }
-        let any_alive = !content_windows(app).is_empty()
+        let any_alive = !content_window_handles(app).is_empty()
             || app.get_webview_window("error").is_some()
             || app.get_webview_window("prefs").is_some()
             || app.get_webview_window("splash").is_some();

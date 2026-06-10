@@ -113,14 +113,41 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 pub fn zoom_step(app: &AppHandle, delta: f64) {
     let next = (prefs::zoom_get(app) + delta).clamp(0.5, 3.0);
     prefs::zoom_set(app, next);
-    if let Some(w) = windows::focused_or_recent_content(app) {
-        let _ = w.set_zoom(next);
-    }
+    windows::active_content_zoom(app, next);
 }
 
 pub fn zoom_reset(app: &AppHandle) {
     prefs::zoom_set(app, 1.0);
-    if let Some(w) = windows::focused_or_recent_content(app) {
-        let _ = w.set_zoom(1.0);
-    }
+    windows::active_content_zoom(app, 1.0);
+}
+
+/// The strip's "⋯" popup — a NATIVE context menu (Windows/Linux), doubling as
+/// the discoverability surface: every action lists its keyboard shortcut.
+/// Shortcut hints ride in the item text ("\t" column) rather than real
+/// accelerators so they never double-fire with the injected key forwarder.
+pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let version = app.package_info().version.to_string();
+    let item = |id: &str, text: &str| MenuItemBuilder::with_id(id, text).build(app);
+    Menu::with_items(
+        app,
+        &[
+            &item("new_tab", "New Tab\tCtrl+T")?,
+            &item("new_window", "New Window\tCtrl+N")?,
+            &PredefinedMenuItem::separator(app)?,
+            &item("reload", "Reload\tCtrl+R")?,
+            &item("find", "Find in Page…\tCtrl+F")?,
+            &PredefinedMenuItem::separator(app)?,
+            &item("zoom_in", "Zoom In\tCtrl+=")?,
+            &item("zoom_out", "Zoom Out\tCtrl+-")?,
+            &item("zoom_reset", "Actual Size\tCtrl+0")?,
+            &PredefinedMenuItem::separator(app)?,
+            &item("preferences", "Preferences…\tCtrl+,")?,
+            &item("open_browser", "Open in Browser")?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItemBuilder::with_id("about_version", format!("Hermes WebUI Desktop v{version}"))
+                .enabled(false)
+                .build(app)?,
+            &item("quit", "Quit")?,
+        ],
+    )
 }

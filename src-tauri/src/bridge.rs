@@ -370,6 +370,7 @@ const SHORTCUT_FORWARDER: &str = r##"
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     var k = (e.key || '').toLowerCase();
     var send = function (v) { e.preventDefault(); e.stopPropagation(); EMIT('shortcut', v); };
+    if (k === 'tab') { send(e.shiftKey ? 'prev-tab' : 'next-tab'); return; }
     if (e.shiftKey) return;
     if (k === 't') send('new-tab');
     else if (k === 'n') send('new-window');
@@ -432,9 +433,13 @@ pub fn install(app: &AppHandle) {
         match kind {
             "title" => {
                 let raw = payload["value"].as_str().unwrap_or("").to_string();
-                let state = handle.state::<AppState>();
-                state.raw_titles.lock().unwrap().insert(label.clone(), raw);
-                windows::refresh_title(&handle, &label);
+                if label.starts_with("tab-") {
+                    crate::strip::set_tab_title(&handle, &label, &raw);
+                } else {
+                    let state = handle.state::<AppState>();
+                    state.raw_titles.lock().unwrap().insert(label.clone(), raw);
+                    windows::refresh_title(&handle, &label);
+                }
             }
             "theme" => {
                 if let Some(css) = payload["value"].as_str() {
@@ -468,13 +473,34 @@ pub fn install(app: &AppHandle) {
             "shortcut" => {
                 if let Some(v) = payload["value"].as_str() {
                     match v {
-                        "new-tab" => conn::open_new_session(&handle, true),
+                        "new-tab" => {
+                            if crate::strip::enabled() && label.starts_with("tab-") {
+                                // Add a tab to the emitting webview's window.
+                                let app = handle.clone();
+                                let tab = label.clone();
+                                std::thread::spawn(move || {
+                                    if let Some(win) = crate::strip::window_of_tab(&tab) {
+                                        crate::strip::add_tab(&app, &win);
+                                    }
+                                });
+                            } else {
+                                conn::open_new_session(&handle, true);
+                            }
+                        }
                         "new-window" => conn::open_new_session(&handle, false),
                         "close" => {
-                            if let Some(w) = handle.get_webview_window(&label) {
+                            if crate::strip::enabled() && label.starts_with("tab-") {
+                                let app = handle.clone();
+                                let tab = label.clone();
+                                std::thread::spawn(move || {
+                                    crate::strip::close_tab_by_label(&app, &tab);
+                                });
+                            } else if let Some(w) = handle.get_webview_window(&label) {
                                 let _ = w.close();
                             }
                         }
+                        "next-tab" => crate::strip::cycle_tab(&handle, &label, true),
+                        "prev-tab" => crate::strip::cycle_tab(&handle, &label, false),
                         "prefs" => windows::open_prefs(&handle),
                         "zoom-in" => crate::menu::zoom_step(&handle, 0.1),
                         "zoom-out" => crate::menu::zoom_step(&handle, -0.1),
@@ -502,14 +528,15 @@ fn handle_theme_report(app: &AppHandle, css: &str) {
         tauri::Theme::Light
     }));
     prefs::theme_cache_save(app, r, g, b);
-    // Tint the ssh footer with the exact page RGB in every content window and
+    // Tint the ssh footer with the exact page RGB in every content webview and
     // re-apply theme/skin from shared localStorage in the others (S10).
-    for w in windows::content_windows(app) {
-        let _ = w.eval(format!(
+    windows::eval_all_content(
+        app,
+        &format!(
             "if (document.getElementById('hermes-ssh-footer')) document.getElementById('hermes-ssh-footer').style.background = '{hex}';"
-        ));
-        let _ = w.eval(THEME_SYNC_EVAL);
-    }
+        ),
+    );
+    windows::eval_all_content(app, THEME_SYNC_EVAL);
     let _ = app.emit(
         "theme-changed",
         serde_json::json!({ "hex": hex, "isDark": dark }),

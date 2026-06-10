@@ -1,0 +1,248 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="shared/shell.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+      #strip {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        height: 38px;
+        padding: 0 6px;
+        background: var(--hermes-bg);
+        user-select: none;
+      }
+      #tabs {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        overflow: hidden;
+        flex: 0 1 auto;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 8px 0 12px;
+        border-radius: 6px;
+        max-width: 190px;
+        min-width: 72px;
+        cursor: default;
+        color: var(--hermes-fg-secondary);
+        background: transparent;
+        border: 1px solid transparent;
+        flex: 1 1 auto;
+        overflow: hidden;
+      }
+      .tab:hover {
+        background: var(--hermes-control-bg);
+      }
+      .tab.active {
+        background: var(--hermes-control-bg);
+        border-color: var(--hermes-border);
+        color: var(--hermes-fg);
+      }
+      .tab .t {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 12px;
+      }
+      .tab .x {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        line-height: 16px;
+        text-align: center;
+        border-radius: 4px;
+        font-size: 13px;
+        opacity: 0;
+        border: none;
+        background: transparent;
+        color: inherit;
+        padding: 0;
+      }
+      .tab:hover .x,
+      .tab.active .x {
+        opacity: 0.6;
+      }
+      .tab .x:hover {
+        opacity: 1;
+        background: var(--hermes-border);
+      }
+      .iconbtn {
+        flex: none;
+        width: 28px;
+        height: 28px;
+        border: none;
+        background: transparent;
+        border-radius: 6px;
+        font-size: 15px;
+        color: var(--hermes-fg-secondary);
+        padding: 0;
+      }
+      .iconbtn:hover {
+        background: var(--hermes-control-bg);
+        color: var(--hermes-fg);
+      }
+      .spacer {
+        flex: 1 1 0;
+      }
+      #status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        color: var(--hermes-fg-secondary);
+        padding: 0 8px;
+        white-space: nowrap;
+      }
+      #dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 5px;
+        background: #8e8e93;
+        flex: none;
+      }
+      #reconnect {
+        display: none;
+        font-size: 11px;
+        padding: 2px 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="strip">
+      <div id="tabs"></div>
+      <button class="iconbtn" id="newtab" title="New Tab (Ctrl+T)">＋</button>
+      <div class="spacer" data-tauri-drag-region></div>
+      <div id="status">
+        <span id="dot"></span><span id="stext">Connecting…</span>
+      </div>
+      <button id="reconnect">Reconnect</button>
+      <button class="iconbtn" id="menubtn" title="Menu — windows, zoom, preferences…">⋯</button>
+    </div>
+    <script src="shared/shell.js"></script>
+    <script>
+      const WIN = window.__HERMES_WIN || "";
+      let boot = { mode: "direct", target: "" };
+      let tunnel = null; // {state, host, port}
+      let healthy = true;
+
+      function renderTabs(snapshot) {
+        if (snapshot.window !== WIN) return;
+        const root = document.getElementById("tabs");
+        root.textContent = "";
+        snapshot.tabs.forEach((tab, i) => {
+          const el = document.createElement("div");
+          el.className = "tab" + (i === snapshot.active ? " active" : "");
+          el.title = tab.title;
+          const t = document.createElement("span");
+          t.className = "t";
+          t.textContent = tab.title || "New Tab";
+          const x = document.createElement("button");
+          x.className = "x";
+          x.textContent = "×";
+          x.title = "Close Tab (Ctrl+W)";
+          x.addEventListener("click", (e) => {
+            e.stopPropagation();
+            hermes.invoke("tab_close", { window: WIN, tab: tab.label });
+          });
+          el.appendChild(t);
+          el.appendChild(x);
+          el.addEventListener("click", () =>
+            hermes.invoke("tab_select", { window: WIN, tab: tab.label })
+          );
+          el.addEventListener("auxclick", (e) => {
+            if (e.button === 1)
+              hermes.invoke("tab_close", { window: WIN, tab: tab.label });
+          });
+          root.appendChild(el);
+        });
+      }
+
+      function hostLabel(target) {
+        try {
+          const u = new URL(target);
+          return u.host;
+        } catch (e) {
+          return target;
+        }
+      }
+
+      function renderStatus() {
+        const dot = document.getElementById("dot");
+        const text = document.getElementById("stext");
+        const rec = document.getElementById("reconnect");
+        rec.style.display = "none";
+        if (boot.mode === "ssh") {
+          if (!tunnel || tunnel.state === "connecting") {
+            dot.style.background = "#8e8e93";
+            text.textContent = "Connecting…";
+          } else if (tunnel.state === "connected") {
+            dot.style.background = "#32d74b";
+            text.textContent =
+              "Tunnel connected · " + tunnel.host + " · port " + tunnel.port;
+          } else {
+            dot.style.background = "#ff453a";
+            text.textContent = "Tunnel disconnected";
+            rec.style.display = "inline-block";
+          }
+        } else {
+          dot.style.background = healthy ? "#32d74b" : "#ff453a";
+          text.textContent = hostLabel(boot.target);
+        }
+      }
+
+      hermes.invoke("tabs_snapshot", { window: WIN }).then(renderTabs);
+      hermes.invoke("get_boot_info").then((info) => {
+        hermes.applyBootTheme(info);
+        boot = { mode: info.mode, target: info.target };
+        renderStatus();
+      });
+      hermes.listen("tabs-changed", (e) => renderTabs(e.payload));
+      hermes.listen("tunnel-status", (e) => {
+        tunnel = e.payload;
+        renderStatus();
+      });
+      hermes.listen("health-changed", (e) => {
+        healthy = !!e.payload.healthy;
+        renderStatus();
+      });
+
+      document
+        .getElementById("newtab")
+        .addEventListener("click", () => hermes.invoke("tab_new", { window: WIN }));
+      document
+        .getElementById("menubtn")
+        .addEventListener("click", () => hermes.invoke("strip_menu", { window: WIN }));
+      document
+        .getElementById("reconnect")
+        .addEventListener("click", () => hermes.invoke("retry_connect"));
+
+      // Shortcuts while the strip itself has focus (rare but free).
+      document.addEventListener("keydown", (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        const k = (e.key || "").toLowerCase();
+        if (k === "t") {
+          e.preventDefault();
+          hermes.invoke("tab_new", { window: WIN });
+        } else if (k === "n") {
+          e.preventDefault();
+          hermes.invoke("new_window_cmd");
+        } else if (k === ",") {
+          e.preventDefault();
+          hermes.invoke("open_preferences");
+        }
+      });
+    </script>
+  </body>
+</html>

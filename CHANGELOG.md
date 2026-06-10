@@ -1,5 +1,35 @@
 # Changelog
 
+## [v0.2.0] — 2026-06-10
+
+### Added
+
+- **Tabs on Windows and Linux** (tester report: "there's no indicator that there is
+  a functionality for new tabs or windows"). Every window now has a browser-style
+  tab bar: **＋** or `Ctrl+T` opens a tab, click to switch, hover **×** /
+  middle-click / `Ctrl+W` closes, `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle, and tab
+  titles follow the active conversation (same "— Hermes"-stripping pipeline as the
+  macOS native tabs). Each tab is its own live webview — switching tabs never
+  reloads the page or interrupts a streaming response, matching what macOS gets
+  from one-WKWebView-per-native-tab. Built on Tauri's multi-webview support: the
+  window hosts a 38px shell strip plus one content webview per tab; the strip is a
+  bundled page with full IPC while tab content keeps the event-emit-only
+  capability. The connection status (tunnel state with Reconnect, or the direct
+  health dot) moved from the injected page footer into the strip's status area.
+- **A native ⋯ menu in the tab bar** (Windows/Linux) — the discoverability surface
+  the first build lacked: New Tab, New Window, Reload, Find in Page, Zoom,
+  Preferences, Open in Browser and Quit, each listed with its keyboard shortcut, as
+  a real OS context menu.
+- prefs.json is seeded with the full default settings schema on first launch
+  (it previously showed `{}` until something was saved — Swift
+  `seedDefaultsIfNeeded` parity).
+
+### Fixed
+
+- Windows/Linux: `Ctrl+T` previously opened the new window at the OS default
+  position instead of cascading from the current one (superseded by real tabs, but
+  the cascade also applies to `Ctrl+N` windows).
+
 ## [v0.1.2] — 2026-06-10
 
 ### Fixed
