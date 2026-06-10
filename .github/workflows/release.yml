@@ -96,3 +96,80 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Package portable Windows build (no installer)
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory portable | Out-Null
+          Copy-Item "src-tauri/target/release/hermes-webui-desktop.exe" "portable/Hermes WebUI Desktop.exe"
+          Set-Content portable/portable.txt "Portable-mode marker: keep this file next to the exe. Self-update is disabled in portable mode (download new zips from Releases). Settings/logs still live per-user under %APPDATA%/%LOCALAPPDATA%. Requires the Microsoft Edge WebView2 Runtime (preinstalled on Windows 11; https://developer.microsoft.com/microsoft-edge/webview2/)."
+          $zip = "Hermes.WebUI.Desktop_${v}_windows_x64_portable.zip"
+          Compress-Archive -Path portable/* -DestinationPath $zip
+          gh release upload "${{ github.ref_name }}" $zip
+
+  finalize:
+    # Tester feedback: artifact names must state their platform explicitly
+    # ("universal.app.tar.gz" reads as cross-platform but is mac-only).
+    # Renames every asset with a platform label, then patches latest.json's
+    # URLs to match so auto-update keeps working.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rename assets with platform labels and patch latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Resolve the (possibly draft) release id for this tag.
+          RID=$(gh api "repos/$REPO/releases" --paginate \
+            --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -1)
+          [ -n "$RID" ] || { echo "no release for $TAG"; exit 1; }
+
+          rename_of() {
+            case "$1" in
+              *_windows_*|*_linux_*|*_macos_*|latest.json) echo "" ;;
+              *_x64-setup.exe|*_x64-setup.exe.sig) echo "${1/_x64-setup/_windows_x64-setup}" ;;
+              *_x64_en-US.msi|*_x64_en-US.msi.sig) echo "${1/_x64_en-US/_windows_x64_en-US}" ;;
+              *_amd64.AppImage|*_amd64.AppImage.sig) echo "${1/_amd64/_linux_x86_64}" ;;
+              *_amd64.deb) echo "${1/_amd64/_linux_x86_64}" ;;
+              *_universal.dmg) echo "${1/_universal/_macos_universal}" ;;
+              *_universal.app.tar.gz|*_universal.app.tar.gz.sig) echo "${1/_universal/_macos_universal}" ;;
+              *) echo "" ;;
+            esac
+          }
+
+          MAP_FILE=$(mktemp)
+          gh api "repos/$REPO/releases/$RID/assets" --paginate \
+            --jq '.[] | "\(.id)\t\(.name)"' | while IFS=$'\t' read -r AID NAME; do
+            NEW=$(rename_of "$NAME")
+            if [ -n "$NEW" ] && [ "$NEW" != "$NAME" ]; then
+              echo "rename: $NAME -> $NEW"
+              gh api -X PATCH "repos/$REPO/releases/assets/$AID" -f name="$NEW" > /dev/null
+              printf '%s\t%s\n' "$NAME" "$NEW" >> "$MAP_FILE"
+            fi
+          done
+
+          # Patch latest.json URLs to the renamed assets.
+          LJ_ID=$(gh api "repos/$REPO/releases/$RID/assets" --paginate \
+            --jq '.[] | select(.name=="latest.json") | .id' | head -1)
+          if [ -n "$LJ_ID" ] && [ -s "$MAP_FILE" ]; then
+            gh api "repos/$REPO/releases/assets/$LJ_ID" \
+              -H "Accept: application/octet-stream" > latest.json
+            while IFS=$'\t' read -r OLD NEW; do
+              # URL-encode spaces/dots are handled by GitHub; names here are
+              # dot-separated already. Replace both raw and URL-encoded forms.
+              OLD_ENC=$(printf '%s' "$OLD" | sed 's/ /%20/g')
+              NEW_ENC=$(printf '%s' "$NEW" | sed 's/ /%20/g')
+              sed -i "s|$OLD_ENC|$NEW_ENC|g; s|$OLD|$NEW|g" latest.json
+            done < "$MAP_FILE"
+            gh api -X DELETE "repos/$REPO/releases/assets/$LJ_ID" > /dev/null
+            gh release upload "$TAG" latest.json --repo "$REPO"
+            echo "latest.json patched:"
+            grep -o '"url": *"[^"]*"' latest.json || true
+          fi

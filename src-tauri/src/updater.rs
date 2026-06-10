@@ -21,6 +21,31 @@ pub fn spawn_check(app: &AppHandle, interactive: bool) {
 }
 
 fn run_check(app: AppHandle, interactive: bool) {
+    // Windows portable build (zip with a portable.txt marker next to the
+    // exe): self-updating would silently convert it into an installed app —
+    // degrade to a Releases pointer instead (tester request).
+    #[cfg(windows)]
+    {
+        let portable = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.join("portable.txt").exists()))
+            .unwrap_or(false);
+        if portable {
+            log::info!("updater: portable build — self-update disabled");
+            if interactive {
+                app.dialog()
+                    .message(
+                        "This is the portable build, which updates manually:\n\
+                         download the new portable zip from the GitHub Releases page.",
+                    )
+                    .title("Updates")
+                    .kind(MessageDialogKind::Info)
+                    .blocking_show();
+            }
+            return;
+        }
+    }
+
     // Linux: only the AppImage build can self-update.
     #[cfg(target_os = "linux")]
     if std::env::var("APPIMAGE").is_err() {
@@ -104,7 +129,13 @@ fn run_check(app: AppHandle, interactive: bool) {
         Err(e) => {
             log::warn!("updater: check failed: {e}");
             if interactive {
-                show_error(&app, &format!("Couldn't check for updates: {e}"));
+                show_error(
+                    &app,
+                    "Couldn't reach the update service.\n\n\
+                     Check your internet connection, or download the latest version \
+                     from the GitHub Releases page.\n\n\
+                     (Details are in the log file.)",
+                );
             }
         }
     }

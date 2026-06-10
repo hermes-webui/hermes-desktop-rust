@@ -20,9 +20,10 @@ Download the latest build from **[Releases](../../releases)**:
 
 | Platform | File | First-run note |
 |---|---|---|
-| **Windows 10/11** (x64) | `Hermes.WebUI.Desktop_x.y.z_x64-setup.exe` | Unsigned for now → SmartScreen will warn: click **More info → Run anyway**. WebView2 installs automatically on Win10 if missing. (`.msi` also available for IT installs) |
-| **Linux** (x86_64) | `Hermes.WebUI.Desktop_x.y.z_amd64.AppImage` | `chmod +x` and run — no install needed. Requires WebKitGTK 4.1 (preinstalled on Ubuntu 22.04+/Debian 12+/Fedora 38+ desktops). A `.deb` is also available |
-| **macOS 12+** (universal) | `Hermes.WebUI.Desktop_x.y.z_universal.dmg` | Unsigned for now → if Gatekeeper objects, right-click → Open, or allow it under System Settings → Privacy & Security → "Open Anyway" |
+| **Windows 10/11** (x64) | `…_windows_x64-setup.exe` | Unsigned for now → SmartScreen will warn: click **More info → Run anyway**. WebView2 installs automatically on Win10 if missing. (`…_windows_x64_en-US.msi` also available for IT installs) |
+| **Windows portable** (x64) | `…_windows_x64_portable.zip` | Unzip anywhere and run — no installer, no admin rights. Keep `portable.txt` next to the exe (it keeps the app in portable mode). Needs the WebView2 runtime (preinstalled on Win11); updates are manual by design |
+| **Linux** (x86_64) | `…_linux_x86_64.AppImage` | `chmod +x` and run — no install needed. Requires WebKitGTK 4.1 (preinstalled on Ubuntu 22.04+/Debian 12+/Fedora 38+ desktops). A `…_linux_x86_64.deb` is also available |
+| **macOS 12+** (universal) | `…_macos_universal.dmg` | Unsigned for now → if Gatekeeper objects, right-click → Open, or allow it under System Settings → Privacy & Security → "Open Anyway" |
 
 ## Connect it to your Hermes
 
