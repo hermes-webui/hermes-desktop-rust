@@ -183,6 +183,15 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
         if let Some(host) = &host_window {
             crate::macos::add_tabbed_window(host, &win);
         }
+        // Windows/Linux have no native tabbing yet (custom tab strip is the
+        // v0.4.0 sprint) — until then Ctrl+T behaves like Ctrl+N: a separate
+        // window, cascaded so it visibly lands somewhere new.
+        #[cfg(not(target_os = "macos"))]
+        if let Some(host) = &host_window {
+            if let Ok(pos) = host.outer_position() {
+                let _ = win.set_position(tauri::PhysicalPosition::new(pos.x + 28, pos.y + 28));
+            }
+        }
     } else {
         // Cmd+N: force standalone at show-time (tabbingMode = disallowed),
         // restore preferred after show so Merge All Windows still works.
