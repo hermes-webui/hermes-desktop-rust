@@ -42,6 +42,17 @@ one `git push` sometimes drops one of the two events and the workflow never fire
 workflow run, trigger manually: Actions → Build and Release → Run workflow, or
 re-push the tag.
 
+**"Resource not accessible by integration" on the create-release step** means the
+GITHUB_TOKEN is capped to read-only — check BOTH the repo setting (Settings →
+Actions → General → Workflow permissions) AND the same setting at the
+**organization** level, which silently overrides everything below it (this bit us
+on v0.3.0). After fixing the setting, **re-running the failed run is useless** —
+re-runs reuse the original run's token privileges. Dispatch a fresh run instead:
+
+```bash
+gh workflow run "Build and Release" --repo hermes-webui/hermes-desktop-rust --ref vX.Y.Z
+```
+
 ## What happens automatically on tag push
 
 `.github/workflows/release.yml`:
