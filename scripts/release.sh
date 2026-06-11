@@ -55,5 +55,17 @@ echo "Tagging and pushing $VERSION (separate operation)…"
 git tag "$VERSION"
 git push origin "$VERSION"
 
+# Pre-create the draft release with the maintainer's token. The org's Actions
+# policy blocks the workflow token from CREATING releases (even with
+# Contents:write — see RELEASING.md troubleshooting); tauri-action finds this
+# draft by tag and only uploads assets into it, which works fine.
+echo "Creating draft release…"
+NOTES_FILE=$(mktemp)
+python3 scripts/extract_changelog.py "$VERSION" > "$NOTES_FILE"
+gh release create "$VERSION" --repo hermes-webui/hermes-desktop-rust --draft \
+    --title "Hermes WebUI Desktop $VERSION" --notes-file "$NOTES_FILE" \
+    || echo "note: draft may already exist — CI will reuse it"
+rm -f "$NOTES_FILE"
+
 echo "Done. Watch the run: gh run watch --repo hermes-webui/hermes-desktop-rust"
-echo "The release is created as a DRAFT — smoke-test the artifacts, then publish."
+echo "The release is a DRAFT — smoke-test the artifacts, then publish."

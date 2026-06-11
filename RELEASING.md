@@ -42,16 +42,23 @@ one `git push` sometimes drops one of the two events and the workflow never fire
 workflow run, trigger manually: Actions → Build and Release → Run workflow, or
 re-push the tag.
 
-**"Resource not accessible by integration" on the create-release step** means the
-GITHUB_TOKEN is capped to read-only — check BOTH the repo setting (Settings →
-Actions → General → Workflow permissions) AND the same setting at the
-**organization** level, which silently overrides everything below it (this bit us
-on v0.3.0). After fixing the setting, **re-running the failed run is useless** —
-re-runs reuse the original run's token privileges. Dispatch a fresh run instead:
+**"Resource not accessible by integration" on the create-release step**: in this
+org, the workflow token cannot CREATE releases even when its permission block shows
+`Contents: write` (verified empirically on v0.3.0 — uploads work, creation 403s;
+some org-level policy gates creation specifically). That's why `release.sh`
+**pre-creates the draft release with the maintainer's token** — tauri-action then
+finds the draft by tag and only uploads assets. If you ever tag manually, create
+the draft yourself before (or after) the workflow runs:
 
 ```bash
+gh release create vX.Y.Z --repo hermes-webui/hermes-desktop-rust --draft \
+  --title "Hermes WebUI Desktop vX.Y.Z" --notes-file <(python3 scripts/extract_changelog.py vX.Y.Z)
 gh workflow run "Build and Release" --repo hermes-webui/hermes-desktop-rust --ref vX.Y.Z
 ```
+
+Related: if a permission setting is fixed mid-incident, **re-running a failed run
+is useless** — re-runs reuse the original run's token grants. Always dispatch a
+fresh run.
 
 ## What happens automatically on tag push
 
