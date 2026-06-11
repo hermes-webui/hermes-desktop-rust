@@ -114,7 +114,15 @@ jobs:
     # ("universal.app.tar.gz" reads as cross-platform but is mac-only).
     # Renames every asset with a platform label, then patches latest.json's
     # URLs to match so auto-update keeps working.
+    #
+    # Runs even when a build job failed (renames whatever uploaded — the
+    # rename is idempotent), but then FAILS itself if the release is missing
+    # any expected asset. That keeps finalize red until a rerun completes the
+    # set, so `gh run rerun --failed` always re-runs it and a release can
+    # never sit complete-but-unlabeled (the v0.3.1 first-attempt gap).
+    # RULE: only publish a release whose finalize job is green.
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Rename assets with platform labels and patch latest.json
@@ -171,3 +179,32 @@ jobs:
             echo "latest.json patched:"
             grep -o '"url": *"[^"]*"' latest.json || true
           fi
+
+          # Completeness gate (real version tags only): fail unless every
+          # expected platform-labeled asset is present, so a partial release
+          # keeps this job red until reruns finish the set.
+          case "$TAG" in
+            v[0-9]*)
+              NAMES=$(gh api "repos/$REPO/releases/$RID/assets" --paginate --jq '.[].name')
+              missing=0
+              for pat in \
+                "_windows_x64-setup.exe" "_windows_x64-setup.exe.sig" \
+                "_windows_x64_en-US.msi" "_windows_x64_en-US.msi.sig" \
+                "_windows_x64_portable.zip" \
+                "_linux_x86_64.AppImage" "_linux_x86_64.AppImage.sig" \
+                "_linux_x86_64.deb" \
+                "_macos_universal.dmg" \
+                "_macos_universal.app.tar.gz" "_macos_universal.app.tar.gz.sig" \
+                "latest.json"; do
+                if ! printf '%s\n' "$NAMES" | grep -qF "$pat"; then
+                  echo "MISSING asset matching: $pat"
+                  missing=1
+                fi
+              done
+              [ "$missing" -eq 0 ] || { echo "release incomplete — rerun failed build jobs"; exit 1; }
+              echo "asset set complete and platform-labeled ✓"
+              ;;
+            *)
+              echo "non-version ref ($TAG) — skipping completeness gate"
+              ;;
+          esac
