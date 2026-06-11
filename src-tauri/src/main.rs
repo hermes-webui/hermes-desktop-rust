@@ -118,6 +118,19 @@ fn get_boot_info(app: tauri::AppHandle) -> serde_json::Value {
 }
 
 fn main() {
+    // Linux/X11: switch Xlib to thread-safe mode BEFORE any other X call in
+    // the process — must stay the first statement, ahead of GTK/GDK init.
+    // WebKitGTK's internal threads talk X11 directly; without this they race
+    // the main loop and intermittently corrupt Xlib's reply stream at startup
+    // ("[xcb] Unknown sequence number while awaiting reply …
+    // xcb_xlib_threads_sequence_lost" abort, or a silent fatal-IO exit(1) —
+    // 5 of 7 Linux smoke runs on identical code). dlopen via x11-dl so
+    // Wayland-only systems without libX11 simply skip it.
+    #[cfg(target_os = "linux")]
+    if let Ok(xlib) = x11_dl::xlib::Xlib::open() {
+        unsafe { (xlib.XInitThreads)() };
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Second launch (e.g. double-opening the .app/.exe): focus the

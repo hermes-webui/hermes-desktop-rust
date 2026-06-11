@@ -1732,6 +1732,7 @@ dependencies = [
  "tauri-plugin-updater",
  "ureq",
  "url",
+ "x11-dl",
 ]
 
 [[package]]
