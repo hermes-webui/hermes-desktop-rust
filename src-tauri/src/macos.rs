@@ -17,13 +17,53 @@ use objc2::runtime::AnyClass;
 use objc2::ClassType;
 use objc2_app_kit::{NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
 use objc2_foundation::{CGPoint, CGRect, CGSize};
+use std::ffi::c_void;
 use tauri::WebviewWindow;
+
+// ---- GCD main-queue dispatch ----
+//
+// NSWindow mutations that can force a synchronous display (addTabbedWindow,
+// tabbingMode) must run OUTSIDE any tao event-handler frame. Inside one
+// (menu/IPC handlers, run_on_main_thread closures), tao holds its
+// non-reentrant Handler mutex; AppKit's forced redraw re-enters
+// tao::view::draw_rect → handle_nonuser_event → the SAME mutex →
+// self-deadlock on the main thread (the v0.2.0–v0.3.2 frozen-app-on-Cmd+T
+// bug; conditional on the tab windows needing a resize, which is why
+// default-size dev windows never hit it). The GCD main queue is drained by
+// the runloop between tao callouts, so a block queued here runs with the
+// handler mutex free.
+#[repr(C)]
+struct DispatchObject {
+    _private: [u8; 0],
+}
+extern "C" {
+    static _dispatch_main_q: DispatchObject;
+    fn dispatch_async_f(
+        queue: *const DispatchObject,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+}
+extern "C" fn dispatch_trampoline(ctx: *mut c_void) {
+    let f = unsafe { Box::from_raw(ctx as *mut Box<dyn FnOnce()>) };
+    f();
+}
+fn dispatch_main_async(f: impl FnOnce() + Send + 'static) {
+    let boxed: Box<Box<dyn FnOnce()>> = Box::new(Box::new(f));
+    unsafe {
+        dispatch_async_f(
+            &_dispatch_main_q,
+            Box::into_raw(boxed) as *mut c_void,
+            dispatch_trampoline,
+        )
+    };
+}
 
 /// Attach `new_win` to `host`'s native tab group (Cmd+T behavior).
 pub fn add_tabbed_window(host: &WebviewWindow, new_win: &WebviewWindow) {
     let host2 = host.clone();
     let new_win = new_win.clone();
-    let result = host.run_on_main_thread(move || {
+    dispatch_main_async(move || {
         let (Ok(host_ptr), Ok(new_ptr)) = (host2.ns_window(), new_win.ns_window()) else {
             return;
         };
@@ -32,17 +72,15 @@ pub fn add_tabbed_window(host: &WebviewWindow, new_win: &WebviewWindow) {
             let new_ns: &NSWindow = &*(new_ptr as *const NSWindow);
             host_ns.addTabbedWindow_ordered(new_ns, NSWindowOrderingMode::NSWindowAbove);
         }
+        log::info!("macos: tabbed {} into {}", new_win.label(), host2.label());
     });
-    if let Err(e) = result {
-        log::warn!("macos: addTabbedWindow dispatch failed: {e}");
-    }
 }
 
 /// Set NSWindow.tabbingMode. `disallowed=true` before showing a Cmd+N window
 /// keeps it standalone; restore preferred afterwards (Swift fix).
 pub fn set_tabbing_mode(window: &WebviewWindow, disallowed: bool) {
     let w = window.clone();
-    let _ = window.run_on_main_thread(move || {
+    dispatch_main_async(move || {
         if let Ok(ptr) = w.ns_window() {
             unsafe {
                 let ns: &NSWindow = &*(ptr as *const NSWindow);
