@@ -217,6 +217,11 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
                     let _ = w.set_focus();
                 }
             }
+            // Re-fit bounds now that the window is shown/realized — GTK
+            // applies pre-realize child geometry imprecisely (the ~170px
+            // strip band on Linux). Safe here: post-realize, unlike the
+            // construction-time call that crashed in smoke v3.
+            layout(&app, &load_window);
         });
 
     let (pos, size) = content_bounds(&win);
@@ -392,6 +397,13 @@ pub fn layout(app: &AppHandle, window_label: &str) {
     let scale = win.scale_factor().unwrap_or(1.0);
     let Ok(size) = win.inner_size() else { return };
     let logical = size.to_logical::<f64>(scale);
+    log::debug!(
+        "strip: layout {window_label} inner={}x{} scale={scale} logical={}x{}",
+        size.width,
+        size.height,
+        logical.width,
+        logical.height
+    );
     let strip_label = format!("strip-{}", window_seq(window_label));
     if let Some(strip_wv) = find_webview(&win, &strip_label) {
         let _ = strip_wv.set_position(LogicalPosition::new(0.0, 0.0));
