@@ -104,6 +104,8 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
         log::error!("strip: strip webview failed: {e}");
     }
 
+    log::info!("strip: window {label} built, strip webview added");
+
     // Frame: first window restores persisted frame / centers, others cascade.
     if is_first {
         if let Some((x, y, w, h)) = prefs::frame_load(app) {
@@ -111,16 +113,20 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
             let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
         } else {
             // GTK no-ops center() on a not-yet-shown window (Linux smoke
-            // finding: the window landed half off-screen) — compute the
-            // centered position explicitly instead.
-            let centered = win.current_monitor().ok().flatten().and_then(|mon| {
+            // finding: the window landed half off-screen). Compute the
+            // centered position from the APP-level primary monitor — never
+            // query the hidden window itself (monitor/size calls on an
+            // unrealized GTK window are crash-prone).
+            let centered = app.primary_monitor().ok().flatten().map(|mon| {
                 let ms = mon.size();
-                let ws = win.outer_size().ok()?;
                 let mp = mon.position();
-                Some(tauri::PhysicalPosition::new(
-                    mp.x + (ms.width.saturating_sub(ws.width) as i32) / 2,
-                    mp.y + (ms.height.saturating_sub(ws.height) as i32) / 2,
-                ))
+                let sf = mon.scale_factor();
+                let ww = (1280.0 * sf) as u32;
+                let wh = (830.0 * sf) as u32;
+                tauri::PhysicalPosition::new(
+                    mp.x + (ms.width.saturating_sub(ww) as i32) / 2,
+                    mp.y + (ms.height.saturating_sub(wh) as i32) / 2,
+                )
             });
             match centered {
                 Some(pos) => {
@@ -131,6 +137,7 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
                 }
             }
         }
+        log::info!("strip: window {label} positioned");
     } else if let Some(host) = host {
         if let Ok(pos) = host.outer_position() {
             let _ = win.set_position(tauri::PhysicalPosition::new(pos.x + 28, pos.y + 28));
@@ -138,9 +145,7 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
     }
 
     add_tab(app, &label);
-    // Belt-and-suspenders bounds pass for the strip + first tab (the resize
-    // event that normally re-fits them may not fire before first paint).
-    layout(app, &label);
+    log::info!("strip: window {label} ready");
 
     // Show fallback if the first page load never completes.
     {
@@ -240,6 +245,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         entry.active = entry.tabs.len() - 1;
     }
     let _ = webview.set_focus();
+    log::info!("strip: tab {tab_label} added to {window_label}");
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);
 }
