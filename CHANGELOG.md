@@ -12,12 +12,12 @@ hardened runtime).
 
 - **Platform-labeled release artifacts** (tester request: "label the binaries to
   be clear about platform"): every asset now states its platform —
-  `…_windows_x64-setup.exe`, `…_linux_x86_64.AppImage`, `…_macos_universal.dmg`,
+  `…_win_x64-setup.exe`, `…_lin_x86_64.AppImage`, `…_macos_universal.dmg`,
   and the formerly ambiguous `universal.app.tar.gz` is now
   `…_macos_universal.app.tar.gz`. The update manifest's URLs are rewritten to
   match automatically, while the release is still a draft.
 - **Portable Windows build** (tester request: "be nice to have a non-installer
-  .exe"): `…_windows_x64_portable.zip` — unzip anywhere and run, no installer, no
+  .exe"): `…_win_x64_portable.zip` — unzip anywhere and run, no installer, no
   admin rights. The bundled `portable.txt` marker keeps the app in portable mode:
   self-update is disabled there (it would silently convert the portable copy into
   an installed app) and points at Releases instead. Requires the WebView2 runtime

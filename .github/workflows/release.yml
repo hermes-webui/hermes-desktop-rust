@@ -105,7 +105,7 @@ jobs:
           New-Item -ItemType Directory portable | Out-Null
           Copy-Item "src-tauri/target/release/hermes-webui-desktop.exe" "portable/Hermes WebUI Desktop.exe"
           Set-Content portable/portable.txt "Portable-mode marker: keep this file next to the exe. Self-update is disabled in portable mode (download new zips from Releases). Settings/logs still live per-user under %APPDATA%/%LOCALAPPDATA%. Requires the Microsoft Edge WebView2 Runtime (preinstalled on Windows 11; https://developer.microsoft.com/microsoft-edge/webview2/)."
-          $zip = "Hermes.WebUI.Desktop_${v}_windows_x64_portable.zip"
+          $zip = "Hermes.WebUI.Desktop_${v}_win_x64_portable.zip"
           Compress-Archive -Path portable/* -DestinationPath $zip
           gh release upload "${{ github.ref_name }}" $zip
 
@@ -137,13 +137,15 @@ jobs:
             --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -1)
           [ -n "$RID" ] || { echo "no release for $TAG"; exit 1; }
 
+          # Naming scheme (maintainer's, set on v0.3.1): win_x64 / lin_x86_64
+          # / macos_universal.
           rename_of() {
             case "$1" in
-              *_windows_*|*_linux_*|*_macos_*|latest.json) echo "" ;;
-              *_x64-setup.exe|*_x64-setup.exe.sig) echo "${1/_x64-setup/_windows_x64-setup}" ;;
-              *_x64_en-US.msi|*_x64_en-US.msi.sig) echo "${1/_x64_en-US/_windows_x64_en-US}" ;;
-              *_amd64.AppImage|*_amd64.AppImage.sig) echo "${1/_amd64/_linux_x86_64}" ;;
-              *_amd64.deb) echo "${1/_amd64/_linux_x86_64}" ;;
+              *_win_*|*_lin_*|*_macos_*|latest.json) echo "" ;;
+              *_x64-setup.exe|*_x64-setup.exe.sig) echo "${1/_x64-setup/_win_x64-setup}" ;;
+              *_x64_en-US.msi|*_x64_en-US.msi.sig) echo "${1/_x64_en-US/_win_x64_en-US}" ;;
+              *_amd64.AppImage|*_amd64.AppImage.sig) echo "${1/_amd64/_lin_x86_64}" ;;
+              *_amd64.deb|*_amd64.deb.sig) echo "${1/_amd64/_lin_x86_64}" ;;
               *_universal.dmg) echo "${1/_universal/_macos_universal}" ;;
               *_universal.app.tar.gz|*_universal.app.tar.gz.sig) echo "${1/_universal/_macos_universal}" ;;
               *) echo "" ;;
@@ -188,11 +190,11 @@ jobs:
               NAMES=$(gh api "repos/$REPO/releases/$RID/assets" --paginate --jq '.[].name')
               missing=0
               for pat in \
-                "_windows_x64-setup.exe" "_windows_x64-setup.exe.sig" \
-                "_windows_x64_en-US.msi" "_windows_x64_en-US.msi.sig" \
-                "_windows_x64_portable.zip" \
-                "_linux_x86_64.AppImage" "_linux_x86_64.AppImage.sig" \
-                "_linux_x86_64.deb" \
+                "_win_x64-setup.exe" "_win_x64-setup.exe.sig" \
+                "_win_x64_en-US.msi" "_win_x64_en-US.msi.sig" \
+                "_win_x64_portable.zip" \
+                "_lin_x86_64.AppImage" "_lin_x86_64.AppImage.sig" \
+                "_lin_x86_64.deb" \
                 "_macos_universal.dmg" \
                 "_macos_universal.app.tar.gz" "_macos_universal.app.tar.gz.sig" \
                 "latest.json"; do
