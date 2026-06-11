@@ -78,7 +78,7 @@ jobs:
             sleep 8   # let the strip + page paint
             import -window root screenshot.png
             if ! kill -0 $APP 2>/dev/null; then
-              wait $APP; CODE=$?
+              CODE=0; wait $APP || CODE=$?
               echo "app died (exit code $CODE — >128 means signal $((CODE-128)))"
               exit 1
             fi

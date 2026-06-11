@@ -217,11 +217,6 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
                     let _ = w.set_focus();
                 }
             }
-            // Re-fit bounds now that the window is shown/realized — GTK
-            // applies pre-realize child geometry imprecisely (the ~170px
-            // strip band on Linux). Safe here: post-realize, unlike the
-            // construction-time call that crashed in smoke v3.
-            layout(&app, &load_window);
         });
 
     let (pos, size) = content_bounds(&win);
@@ -283,9 +278,14 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         }
     }
     if let Some(wv) = find_webview(&win, tab_label) {
-        let (pos, size) = content_bounds(&win);
-        let _ = wv.set_position(pos);
-        let _ = wv.set_size(size);
+        // Linux: NEVER call set_position/set_size on an existing GTK child
+        // webview — it crashes natively (isolated by Linux smoke v3/v5;
+        // creation-time bounds render fine). Show/hide alone is safe.
+        if !cfg!(target_os = "linux") {
+            let (pos, size) = content_bounds(&win);
+            let _ = wv.set_position(pos);
+            let _ = wv.set_size(size);
+        }
         let _ = wv.show();
         let _ = wv.set_focus();
     }
@@ -391,6 +391,12 @@ pub fn all_tab_webviews(app: &AppHandle) -> Vec<Webview<Wry>> {
 
 /// Recompute strip + active tab bounds (window Resized handler).
 pub fn layout(app: &AppHandle, window_label: &str) {
+    // Linux: re-fitting GTK child webviews crashes natively (smoke v3/v5
+    // finding) — skip entirely. Cost: window resizes don't re-fit webviews
+    // there yet; tracked for the next sprint (upstream wry GTK geometry).
+    if cfg!(target_os = "linux") {
+        return;
+    }
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
     };
