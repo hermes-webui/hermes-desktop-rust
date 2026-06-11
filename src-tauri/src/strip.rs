@@ -110,7 +110,26 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
             let _ = win.set_size(tauri::PhysicalSize::new(w, h));
             let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
         } else {
-            let _ = win.center();
+            // GTK no-ops center() on a not-yet-shown window (Linux smoke
+            // finding: the window landed half off-screen) — compute the
+            // centered position explicitly instead.
+            let centered = win.current_monitor().ok().flatten().and_then(|mon| {
+                let ms = mon.size();
+                let ws = win.outer_size().ok()?;
+                let mp = mon.position();
+                Some(tauri::PhysicalPosition::new(
+                    mp.x + (ms.width.saturating_sub(ws.width) as i32) / 2,
+                    mp.y + (ms.height.saturating_sub(ws.height) as i32) / 2,
+                ))
+            });
+            match centered {
+                Some(pos) => {
+                    let _ = win.set_position(pos);
+                }
+                None => {
+                    let _ = win.center();
+                }
+            }
         }
     } else if let Some(host) = host {
         if let Ok(pos) = host.outer_position() {
@@ -119,6 +138,9 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
     }
 
     add_tab(app, &label);
+    // Belt-and-suspenders bounds pass for the strip + first tab (the resize
+    // event that normally re-fits them may not fire before first paint).
+    layout(app, &label);
 
     // Show fallback if the first page load never completes.
     {
