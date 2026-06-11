@@ -1,6 +1,6 @@
 [package]
 name = "hermes-webui-desktop"
-version = "0.3.2"
+version = "0.3.3"
 description = "Hermes WebUI Desktop — cross-platform shell for hermes-webui"
 edition = "2021"
 license = "MIT"
