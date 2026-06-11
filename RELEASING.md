@@ -101,16 +101,24 @@ check `releases/latest/download/latest.json` ~10s after launch and via
 - The draft-release flow still applies: `latest.json` only goes live when the
   release is **published**, so installed apps never see an unsmoked build.
 
-## Enabling macOS signing + notarization (when ready)
+## macOS signing + notarization (ENABLED 2026-06-11)
 
-Add fresh repo secrets in
-[tauri's format](https://tauri.app/distribute/sign/macos/) — `APPLE_CERTIFICATE`
-(base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-`APPLE_PASSWORD`, `APPLE_TEAM_ID` — then uncomment the env block in
-`.github/workflows/release.yml`. **Don't rely on inherited org secrets** (a
-present-but-unusable `APPLE_CERTIFICATE` makes the bundler attempt signing and fail —
-this broke the very first run). Windows signing (Azure Trusted Signing / OV cert) is
-likewise config-only when wanted.
+The release workflow signs with the Developer ID certificate and notarizes via six
+repo secrets ([tauri's format](https://tauri.app/distribute/sign/macos/)):
+`APPLE_CERTIFICATE` (base64 `.p12` incl. private key), `APPLE_CERTIFICATE_PASSWORD`,
+`APPLE_SIGNING_IDENTITY` (`Developer ID Application: Name (TEAMID)`), `APPLE_ID`,
+`APPLE_PASSWORD` (app-specific password, `xxxx-xxxx-xxxx-xxxx`), `APPLE_TEAM_ID`.
+Hardened runtime is on, with `src-tauri/Entitlements.plist` granting network-client
+and microphone (Swift-app parity — voice input breaks under hardened runtime
+without it). Notarization adds ~2–5 min to the macOS job.
+
+Gotchas: **every secret must exist and be non-empty** — a present-but-broken
+`APPLE_CERTIFICATE` (or a missing password) makes the bundler attempt signing and
+fail the whole build. Local `npx tauri build` needs the updater signing key in the
+environment (`TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` from the maintainer's secure
+storage) and produces ad-hoc-signed bundles without Apple identity — entitlements
+only embed in CI's signed builds. Windows signing (Azure Trusted Signing / OV cert)
+remains config-only when wanted.
 
 ## Optional: zero-touch releases
 

@@ -76,18 +76,16 @@ jobs:
           # live outside the repo (see RELEASING.md § updater key).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS signing + notarization (currently DISABLED — DMG ships
-          # unsigned; README documents the Gatekeeper bypass). To enable:
-          # add these repo secrets in the tauri-action format
-          # (https://tauri.app/distribute/sign/macos/) and uncomment.
-          # Don't pass empty org secrets — a present-but-broken
-          # APPLE_CERTIFICATE makes the bundler attempt signing and fail.
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS signing + notarization (enabled 2026-06-11; secrets are
+          # repo-level — see RELEASING.md). NOTE: every secret must be
+          # present and non-empty; a present-but-broken APPLE_CERTIFICATE
+          # makes the bundler attempt signing and fail the build.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Hermes WebUI Desktop ${{ github.ref_name }}"
