@@ -1,5 +1,51 @@
 # Changelog
 
+## [v0.3.1] — 2026-06-10
+
+The first release that arrives **as an in-app update** for v0.3.0 users — and the
+first **signed and notarized macOS build** (Developer ID + hardened runtime +
+stapled notarization: no more right-click-to-open ritual; microphone and network
+entitlements mirror hermes-swift-mac so voice input keeps working under the
+hardened runtime).
+
+### Added
+
+- **Platform-labeled release artifacts** (tester request: "label the binaries to
+  be clear about platform"): every asset now states its platform —
+  `…_windows_x64-setup.exe`, `…_linux_x86_64.AppImage`, `…_macos_universal.dmg`,
+  and the formerly ambiguous `universal.app.tar.gz` is now
+  `…_macos_universal.app.tar.gz`. The update manifest's URLs are rewritten to
+  match automatically, while the release is still a draft.
+- **Portable Windows build** (tester request: "be nice to have a non-installer
+  .exe"): `…_windows_x64_portable.zip` — unzip anywhere and run, no installer, no
+  admin rights. The bundled `portable.txt` marker keeps the app in portable mode:
+  self-update is disabled there (it would silently convert the portable copy into
+  an installed app) and points at Releases instead. Requires the WebView2 runtime
+  (preinstalled on Windows 11).
+- **SSH tunnel auto-recovery** (Swift app NWPathMonitor parity): while the tunnel
+  is down — laptop slept, Wi-Fi dropped, VPN flapped — the app probes the SSH
+  host's port every 10 s and reconnects the moment it answers, with a blind retry
+  every 60 s for `ssh_config`-mapped ports. No more manually clicking Reconnect
+  after every sleep/wake.
+- **Downloads on macOS and Linux**: session exports and other in-app downloads
+  (which WKWebView/WebKitGTK silently drop) are intercepted, saved into
+  ~/Downloads with collision-safe names, and announced with a notification.
+  Windows keeps WebView2's native Save As dialog.
+- **Reveal Log File** in the macOS app menu and the tab bar's ⋯ menu — opens the
+  live log in Finder/Explorer/Files for bug reports.
+
+### Fixed
+
+- The update-check failure dialog now gives actionable guidance instead of a raw
+  plugin error string.
+- Linux stability hardening from the new CI smoke harness (which launches the
+  real app on Ubuntu under Xvfb and screenshots it): window centering no longer
+  relies on GTK's no-op `center()` for hidden windows, the tab strip's buttons
+  use font-safe glyphs, and tab operations avoid re-fitting GTK child webview
+  geometry — which crashes natively in Tauri's multi-webview on Linux. Known
+  cosmetic limits on Linux for now: extra strip padding, and window resizes
+  don't re-fit webview bounds (upstream wry/GTK work, tracked).
+
 ## [v0.3.0] — 2026-06-10
 
 ### Added
