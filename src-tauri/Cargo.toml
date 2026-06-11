@@ -35,6 +35,12 @@ url = "2"
 # tunnel.rs uses libc::kill for the SIGTERM→SIGKILL teardown on macOS AND Linux
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# main.rs calls XInitThreads before GTK init (invariant #11) — WebKitGTK's
+# internal threads race Xlib otherwise (intermittent startup abort). dlopen
+# wrapper, so Wayland-only systems without libX11 degrade gracefully.
+x11-dl = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = [

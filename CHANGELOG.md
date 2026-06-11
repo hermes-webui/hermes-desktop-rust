@@ -1,5 +1,18 @@
 # Changelog
 
+## [v0.3.2] — 2026-06-10
+
+### Fixed
+
+- **Linux: intermittent crash at launch.** WebKitGTK's internal threads talk
+  X11 directly; without Xlib's thread-safe mode they race the GTK main loop
+  and the app could abort during startup (`[xcb] Unknown sequence number
+  while awaiting reply`) or die silently with no window — roughly two out of
+  three launches in the CI smoke harness, timing-dependent on real desktops.
+  The app now calls `XInitThreads` before anything else on Linux. Wayland-only
+  systems without libX11 are unaffected (the call is skipped). Found by the
+  Linux smoke harness flaking on identical builds.
+
 ## [v0.3.1] — 2026-06-10
 
 The first release that arrives **as an in-app update** for v0.3.0 users — and the

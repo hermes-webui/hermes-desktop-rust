@@ -104,6 +104,11 @@ all; `scripts/release.sh` refuses to ship on mismatch. Don't bypass either.
 10. A transient zero-window moment must never exit the app — exit requests
     without a code are suppressed everywhere and Win/Linux quit-on-last-close
     is explicit in `windows::maybe_quit_after_close` (v0.1.1 bug).
+11. Linux `main()` calls `XInitThreads` (via x11-dl) as its FIRST statement,
+    before GTK/GDK touch X11. WebKitGTK's internal threads make direct X
+    calls; without thread-safe Xlib they intermittently corrupt the reply
+    stream at startup — `xcb_xlib_threads_sequence_lost` abort or a silent
+    exit(1) (v0.3.2 fix; ~2-in-3 startup crash under the CI smoke harness).
 
 ### Cross-compiling Windows locally (optional — CI does this natively)
 ```bash
