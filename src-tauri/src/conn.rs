@@ -217,13 +217,20 @@ fn start_recovery_loop(app: &AppHandle, target: String) {
 }
 
 /// Guarded entry for New Window / New Tab (port of openNewBrowserSession).
-/// Runs on a worker thread: window creation must never happen synchronously
-/// on the main thread inside a command/event handler — on Windows that
-/// stalls WebView2 initialization and the window never paints (same bug
-/// class as the v0.1.1 prefs-window report).
+///
+/// Threading is platform-split:
+/// - Windows/Linux: a worker thread — WebView2 stalls forever when a webview
+///   is created synchronously inside a main-thread command/event handler
+///   (v0.1.2 bug, CLAUDE.md invariant #9).
+/// - macOS: INLINE on the calling (main) thread — menu/Dock handlers already
+///   run there, window creation on main is plain AppKit usage, and it avoids
+///   pointless worker→main blocking round-trips. NOTE the actual Cmd+T
+///   freeze fix lives in macos::add_tabbed_window (GCD main-queue deferral,
+///   CLAUDE.md invariant #12) — tab attach must run outside tao's event
+///   dispatch no matter which thread builds the window.
 pub fn open_new_session(app: &AppHandle, as_tab: bool) {
     let app = app.clone();
-    std::thread::spawn(move || {
+    let work = move || {
         let p = prefs::load(&app);
         if p.connection_mode == "ssh"
             && tunnel::current_status(&app) != crate::state::TunnelStatus::Connected
@@ -242,5 +249,9 @@ pub fn open_new_session(app: &AppHandle, as_tab: bool) {
             }
         }
         windows::open_browser(&app, &p, as_tab);
-    });
+    };
+    #[cfg(target_os = "macos")]
+    work();
+    #[cfg(not(target_os = "macos"))]
+    std::thread::spawn(work);
 }

@@ -95,12 +95,13 @@ all; `scripts/release.sh` refuses to ship on mismatch. Don't bypass either.
 7. Injected scripts (`bridge.rs`) only get `core:event:default` capability in remote
    content — never grant the remote origin command access.
 8. Windows ssh spawns need `CREATE_NO_WINDOW` or a console flashes per reconnect.
-9. **Never create a webview window synchronously inside an IPC command or
-   event handler.** On Windows, WebView2 init needs the main message loop
+9. **Windows/Linux: never create a webview window synchronously inside an IPC
+   command or event handler.** WebView2 init needs the main message loop
    pumping — a webview built from a blocking main-thread context stalls forever
    and the window never paints (v0.1.2 bug). Build windows from a worker thread
-   (the orchestrator pattern); window creation from background threads is safe
-   in Tauri on all three platforms.
+   (the orchestrator pattern). macOS is the deliberate exception: menu-driven
+   window creation runs INLINE on the main thread (`conn::open_new_session`) —
+   plain AppKit usage, no WebView2 constraint.
 10. A transient zero-window moment must never exit the app — exit requests
     without a code are suppressed everywhere and Win/Linux quit-on-last-close
     is explicit in `windows::maybe_quit_after_close` (v0.1.1 bug).
@@ -109,6 +110,16 @@ all; `scripts/release.sh` refuses to ship on mismatch. Don't bypass either.
     calls; without thread-safe Xlib they intermittently corrupt the reply
     stream at startup — `xcb_xlib_threads_sequence_lost` abort or a silent
     exit(1) (v0.3.2 fix; ~2-in-3 startup crash under the CI smoke harness).
+12. **macOS NSWindow mutations that can force a synchronous display
+    (`addTabbedWindow`, `setTabbingMode`) go through the GCD main queue
+    (`macos::dispatch_main_async`) — NEVER directly inside a tao callout**
+    (menu/IPC handlers, `run_on_main_thread` closures). AppKit's forced
+    redraw re-enters tao's `draw_rect`, which takes tao's non-reentrant
+    handler mutex → main-thread self-deadlock, app frozen with no crash
+    report (the v0.2.0–v0.3.2 every-Cmd+T freeze; size-dependent, so
+    default-size dev windows masked it). Repro/guard: run with
+    `HERMES_TEST_TAB_AFTER=<s>` — drives the Cmd+T path and heartbeats the
+    main thread.
 
 ### Cross-compiling Windows locally (optional — CI does this natively)
 ```bash

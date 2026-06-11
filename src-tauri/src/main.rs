@@ -202,6 +202,33 @@ fn main() {
                 }
             }
             conn::reconnect(&handle);
+            // Test hook: drive the Cmd+T path without UI scripting, then
+            // heartbeat the main thread — used by the macOS tab-deadlock
+            // repro and (later) the Linux smoke multi-tab exercise. Inert
+            // unless HERMES_TEST_TAB_AFTER=<seconds> is set.
+            if let Ok(v) = std::env::var("HERMES_TEST_TAB_AFTER") {
+                if let Ok(secs) = v.parse::<u64>() {
+                    let h = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(secs));
+                        let h2 = h.clone();
+                        let _ = h.run_on_main_thread(move || {
+                            conn::open_new_session(&h2, true);
+                            log::info!("test: tab hook dispatched on main");
+                        });
+                        for i in 1..=8u32 {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            let h3 = h.clone();
+                            let _ = h.run_on_main_thread(move || {
+                                log::info!(
+                                    "test: heartbeat {i} windows={}",
+                                    windows::content_window_handles(&h3).len()
+                                );
+                            });
+                        }
+                    });
+                }
+            }
             // Passive update check shortly after launch (Sparkle parity) —
             // never blocks startup; only surfaces a dialog when an update
             // actually exists.

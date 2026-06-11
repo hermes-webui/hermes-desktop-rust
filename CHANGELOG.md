@@ -1,5 +1,24 @@
 # Changelog
 
+## [v0.3.3] — 2026-06-10
+
+### Fixed
+
+- **macOS: app froze ("crashed") every time a new tab was opened.** Cmd+T
+  built the window fine, but the native tab attach (`addTabbedWindow`) ran
+  inside the event loop's dispatch, where AppKit may force the other tab's
+  window to redraw *synchronously* — and that redraw re-enters the windowing
+  layer's non-reentrant lock, deadlocking the main thread on itself. The app
+  froze instantly and forever (no crash report — it never crashes, it hangs;
+  confirmed by macOS hang diagnostics on v0.3.1 and v0.3.2). The freeze only
+  triggers when the two windows' sizes differ, which is why default-size dev
+  windows masked it and real resized windows hit it 100% of the time. Tab
+  attach (and the Cmd+N tabbing-mode dance) now runs via the GCD main queue —
+  outside the event dispatch — and Cmd+T/Cmd+N window creation runs inline on
+  the main thread on macOS, like the original prototype. Verified live: tab
+  attach plus continued main-thread heartbeats on the previously-freezing
+  setup.
+
 ## [v0.3.2] — 2026-06-10
 
 ### Fixed
