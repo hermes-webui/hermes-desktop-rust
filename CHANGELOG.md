@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.3.4]
+
+### Fixed
+
+- **Clicking a link in chat did nothing instead of opening the browser.**
+  The WebUI renders chat links with `target="_blank"`, and our injected script
+  forwarded those clicks to native by emitting an `open-external` IPC event.
+  That emit posts to `ipc.localhost`, which the remote page's own CSP
+  `connect-src` blocks (the WebUI server governs the page's CSP, not the shell),
+  so the event never reached Rust and the click was a no-op. External links
+  (and `window.open`) now navigate the top frame instead: the native
+  `on_navigation` hook — which is not subject to the page CSP — opens external
+  hosts in the system browser and cancels the navigation so the page stays put,
+  exactly as plain links already did. No server-side change required.
+  (#12, reported by Deor; cross-ref hermes-webui#4040.)
+- **White flash when opening a new tab (Windows/Linux).** A new tab is a child
+  webview added to an already-visible window, so it painted white until its
+  first paint — the window-level anti-flash (build hidden, reveal on load)
+  couldn't cover it. New tab webviews now get an opaque native background in the
+  cached theme color, so they come up theme-colored instead of white. (#4,
+  reported by Rod.)
+
 ## [v0.3.3] — 2026-06-10
 
 ### Fixed

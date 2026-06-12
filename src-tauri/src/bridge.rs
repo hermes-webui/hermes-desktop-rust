@@ -212,30 +212,41 @@ const NOTIFY_WATCHER: &str = r##"
 
 /// S11 — window.open / target=_blank: same-origin navigates, external opens
 /// in the system browser (parity-plus; the Swift app drops these silently).
+///
+/// Both cases route through a top-frame navigation rather than the IPC
+/// `open-external` emit. The native `on_navigation` hook
+/// (`windows::navigation_allowed`) lets same-origin/localhost through and opens
+/// external hosts in the system browser, cancelling the navigation so the page
+/// stays put. We deliberately avoid `EMIT('open-external', …)` here: that posts
+/// to `ipc.localhost`, which the remote page's own CSP `connect-src` blocks
+/// (the WebUI server, not the shell, governs CSP because `app.security.csp` is
+/// null) — so the emit silently fails and the click is a no-op (issue #12,
+/// hermes-webui#4040). `on_navigation` is a native wry hook, not subject to CSP.
+///
+/// Only http(s) URLs are routed through the top-frame navigation:
+/// `navigation_allowed` deliberately lets non-web schemes through (the engine
+/// needs them internally), so navigating to `about:blank`/`blob:`/`javascript:`
+/// here would REPLACE the app's top frame (a common `window.open` pattern in
+/// libraries). Non-http(s) window.open calls are dropped (the old EMIT path's
+/// effective behavior); non-http(s) `_blank` anchors keep their default action
+/// so the download bridge / engine still handle them.
 const WINDOW_OPEN: &str = r##"
   (function () {
-    const isLocal = function (u) {
-      try {
-        const x = new URL(u, location.href);
-        if (x.origin === location.origin) return true;
-        const h = x.hostname.replace(/^\[|\]$/g, '');
-        return h === 'localhost' || h === '127.0.0.1' || h === '::1';
-      } catch (e) { return false; }
-    };
     window.open = function (u) {
       if (!u) return null;
-      if (isLocal(u)) location.href = u;
-      else EMIT('open-external', String(u));
+      try {
+        var x = new URL(String(u), location.href);
+        if (x.protocol === 'http:' || x.protocol === 'https:') location.href = x.href;
+      } catch (e) {}
       return null;
     };
     document.addEventListener('click', function (e) {
       var a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
-      if (a && a.href) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (isLocal(a.href)) location.href = a.href;
-        else EMIT('open-external', a.href);
-      }
+      if (!a || !a.href) return;
+      if (a.protocol !== 'http:' && a.protocol !== 'https:') return;
+      e.preventDefault();
+      e.stopPropagation();
+      location.href = a.href;
     }, true);
   })();
 "##;
