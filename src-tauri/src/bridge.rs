@@ -222,20 +222,31 @@ const NOTIFY_WATCHER: &str = r##"
 /// (the WebUI server, not the shell, governs CSP because `app.security.csp` is
 /// null) — so the emit silently fails and the click is a no-op (issue #12,
 /// hermes-webui#4040). `on_navigation` is a native wry hook, not subject to CSP.
+///
+/// Only http(s) URLs are routed through the top-frame navigation:
+/// `navigation_allowed` deliberately lets non-web schemes through (the engine
+/// needs them internally), so navigating to `about:blank`/`blob:`/`javascript:`
+/// here would REPLACE the app's top frame (a common `window.open` pattern in
+/// libraries). Non-http(s) window.open calls are dropped (the old EMIT path's
+/// effective behavior); non-http(s) `_blank` anchors keep their default action
+/// so the download bridge / engine still handle them.
 const WINDOW_OPEN: &str = r##"
   (function () {
     window.open = function (u) {
       if (!u) return null;
-      location.href = String(u);
+      try {
+        var x = new URL(String(u), location.href);
+        if (x.protocol === 'http:' || x.protocol === 'https:') location.href = x.href;
+      } catch (e) {}
       return null;
     };
     document.addEventListener('click', function (e) {
       var a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
-      if (a && a.href) {
-        e.preventDefault();
-        e.stopPropagation();
-        location.href = a.href;
-      }
+      if (!a || !a.href) return;
+      if (a.protocol !== 'http:' && a.protocol !== 'https:') return;
+      e.preventDefault();
+      e.stopPropagation();
+      location.href = a.href;
     }, true);
   })();
 "##;

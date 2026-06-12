@@ -195,7 +195,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
     // added tab never flashes white before its first paint. The window-level
     // anti-flash (build-hidden → reveal on load) can't help here: a new tab is
     // a child webview of an already-visible window, so it shows immediately
-    // (issue #4). On Windows the alpha is ignored and the color renders opaque,
+    // (issue #4). On Windows wry clamps any non-zero alpha to fully opaque,
     // which is what we want.
     let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let bg = Color(to8(r), to8(g), to8(b), 255);
