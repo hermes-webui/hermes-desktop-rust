@@ -212,20 +212,21 @@ const NOTIFY_WATCHER: &str = r##"
 
 /// S11 — window.open / target=_blank: same-origin navigates, external opens
 /// in the system browser (parity-plus; the Swift app drops these silently).
+///
+/// Both cases route through a top-frame navigation rather than the IPC
+/// `open-external` emit. The native `on_navigation` hook
+/// (`windows::navigation_allowed`) lets same-origin/localhost through and opens
+/// external hosts in the system browser, cancelling the navigation so the page
+/// stays put. We deliberately avoid `EMIT('open-external', …)` here: that posts
+/// to `ipc.localhost`, which the remote page's own CSP `connect-src` blocks
+/// (the WebUI server, not the shell, governs CSP because `app.security.csp` is
+/// null) — so the emit silently fails and the click is a no-op (issue #12,
+/// hermes-webui#4040). `on_navigation` is a native wry hook, not subject to CSP.
 const WINDOW_OPEN: &str = r##"
   (function () {
-    const isLocal = function (u) {
-      try {
-        const x = new URL(u, location.href);
-        if (x.origin === location.origin) return true;
-        const h = x.hostname.replace(/^\[|\]$/g, '');
-        return h === 'localhost' || h === '127.0.0.1' || h === '::1';
-      } catch (e) { return false; }
-    };
     window.open = function (u) {
       if (!u) return null;
-      if (isLocal(u)) location.href = u;
-      else EMIT('open-external', String(u));
+      location.href = String(u);
       return null;
     };
     document.addEventListener('click', function (e) {
@@ -233,8 +234,7 @@ const WINDOW_OPEN: &str = r##"
       if (a && a.href) {
         e.preventDefault();
         e.stopPropagation();
-        if (isLocal(a.href)) location.href = a.href;
-        else EMIT('open-external', a.href);
+        location.href = a.href;
       }
     }, true);
   })();

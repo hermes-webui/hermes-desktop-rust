@@ -12,7 +12,7 @@ use crate::state::{AppState, TabEntry, WindowTabs};
 use crate::{bridge, prefs, tunnel, windows};
 use serde_json::json;
 use std::sync::atomic::Ordering;
-use tauri::webview::WebviewBuilder;
+use tauri::webview::{Color, WebviewBuilder};
 use tauri::window::WindowBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, Window, Wry,
@@ -191,12 +191,21 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
 
     let (r, g, b) = prefs::pre_paint_color(app);
     let hex = crate::theme::hex_string(r, g, b);
+    // Paint the native webview surface in the cached theme color so a freshly
+    // added tab never flashes white before its first paint. The window-level
+    // anti-flash (build-hidden → reveal on load) can't help here: a new tab is
+    // a child webview of an already-visible window, so it shows immediately
+    // (issue #4). On Windows the alpha is ignored and the color renders opaque,
+    // which is what we want.
+    let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bg = Color(to8(r), to8(g), to8(b), 255);
     // No injected ssh footer in strip mode — status lives in the strip.
     let init = bridge::init_script(&tab_label, &hex, false);
 
     let nav_app = app.clone();
     let load_window = window_label.to_string();
     let wb = WebviewBuilder::new(&tab_label, WebviewUrl::External(target))
+        .background_color(bg)
         .initialization_script(&init)
         .on_navigation(move |url| {
             windows::navigation_allowed(&nav_app, url, allowed_host.as_deref())
