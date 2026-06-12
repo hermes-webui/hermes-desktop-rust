@@ -26,7 +26,9 @@ state; the shell owns the window, the ssh process, and a small prefs JSON.
 ## Repo structure
 
 ```
-src/                      # shell pages (vanilla): splash.html, error.html, prefs.html
+src/                      # shell pages (vanilla): splash.html, error.html, prefs.html,
+                          #   index.html, shell.html (Win/Linux tab-strip shell) + shared/
+                          #   (shell.css, shell.js)
 src-tauri/src/
   main.rs                 # tauri Builder, plugins, commands, window/menu events
   conn.rs                 # connection orchestrator (splash → connect → windows | error)
@@ -42,6 +44,14 @@ src-tauri/src/
   theme.rs                # CSS color parse / luminance / hex (pure fns, unit-tested)
   paste.rs                # clipboard image → PNG → base64 → 3-strategy injection
   menu.rs                 # macOS menu bar (Win/Linux use the injected shortcut forwarder)
+  state.rs                # shared AppState: TunnelStatus, per-window TabEntry/WindowTabs,
+                          #   ssh Child handles, atomics (mirrors Swift TunnelManager enum)
+  strip.rs                # Win/Linux tab strip: 38px shell.html webview + one live
+                          #   content webview per tab; hidden tabs stay alive (SSE/draft
+                          #   survival). HERMES_FORCE_STRIP=1 exercises it on macOS
+  updater.rs              # auto-update (Sparkle parity): minisign-verified vs pubkey in
+                          #   tauri.conf.json, latest.json manifest; passive + interactive
+                          #   check. Win NSIS/MSI, mac .app, Linux AppImage (.deb degrades)
 src-tauri/capabilities/   # IPC scoping: full for shell pages; remote content may ONLY
                           #   emit events (content.json)
 ```
