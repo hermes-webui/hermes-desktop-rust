@@ -210,6 +210,12 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         .on_navigation(move |url| {
             windows::navigation_allowed(&nav_app, url, allowed_host.as_deref())
         })
+        // Native title source — replaces the JS EMIT('title') watcher, which
+        // silently no-ops in remote-origin tab webviews (issue #15). The
+        // webview's label IS the tab label.
+        .on_document_title_changed(|wv, title| {
+            windows::apply_reported_title(wv.app_handle(), wv.label(), &title);
+        })
         .on_page_load(move |webview, payload| {
             if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 return;

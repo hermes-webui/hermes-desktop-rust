@@ -1,5 +1,36 @@
 # Changelog
 
+## [v0.3.5]
+
+### Fixed
+
+- **Windows/Linux: tabs were stuck on "New Tab" and never showed the active
+  session (and titles could "reset" to `Hermes WebUI ● <host>`).** The custom
+  tab strip derived each tab's title from an injected script that posted the
+  page's `document.title` back over the JS event IPC (`window.__TAURI__`). That
+  IPC isn't reliably available in remote-origin content webviews, so the title
+  report silently no-op'd and the tab kept its placeholder. Titles are now read
+  from the webview engine directly via a native title-changed hook
+  (WebView2/WebKitGTK/WKWebView), independent of page JS, the IPC global, and
+  the page's CSP — the same "don't depend on the remote webview's IPC" approach
+  the link-opening fix used. (#15, reported by Deor and b3nw.)
+- **A transient blank title no longer wipes a good tab title.** While a tab is
+  mid-load (or briefly reports a separator-only title), the strip used to fall
+  back to the `Hermes WebUI ● <host>` placeholder. A known-good title (or the
+  initial "New Tab" seed) is now kept until a real title arrives.
+- **Tab titles now strip the trailing name suffix for custom bot names and
+  non-default profiles.** The WebUI appends a " — name" suffix where the name is
+  the configured bot name or the profile name — not always "Hermes". The suffix
+  is now removed generically (only the last separator-delimited segment, so an
+  em-dash inside the session title itself is preserved) instead of matching the
+  literal "Hermes".
+- **Direct-mode connections to a non-localhost HTTP server now get the bridge
+  again.** The content-webview capability listed `https://*` but no plain
+  `http://*`, so for a Direct connection to e.g. `http://192.168.x.x:8787`
+  every bridge emit (theme sync, the "response is ready" notification) was
+  silently dropped. Plain-HTTP remote origins are now covered (still
+  event-emit-only — no command access).
+
 ## [v0.3.4] — 2026-06-12
 
 ### Fixed

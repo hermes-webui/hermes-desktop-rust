@@ -166,6 +166,11 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
         .visible(false)
         .initialization_script(&init)
         .on_navigation(move |url| navigation_allowed(&nav_app, url, allowed_host.as_deref()))
+        // Native title source (see apply_reported_title) — replaces the JS
+        // EMIT('title') watcher so titles work regardless of remote-webview IPC.
+        .on_document_title_changed(|win, title| {
+            apply_reported_title(win.app_handle(), win.label(), &title);
+        })
         .on_page_load(move |webview, payload| {
             if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 return;
@@ -375,10 +380,35 @@ fn push_tunnel_status(
     ));
 }
 
+/// Strip the WebUI's trailing " — <name>" suffix from a reported document
+/// title. The suffix is NOT always "Hermes": it's the user's configured bot
+/// name, or — on a non-default profile — the capitalized profile name (issue
+/// #15). So we strip the trailing `<sep> <segment>` generically rather than
+/// matching the literal "Hermes". `<segment>` is separator-free, so only the
+/// LAST separator group is removed — an internal " — " in the session title
+/// itself is preserved ("Plan A — Phase 1 — Hermes" → "Plan A — Phase 1").
+/// Returns empty when the title is empty or separator/suffix-only.
+pub fn clean_title(raw: &str) -> String {
+    // Leading `\s*` (not `\s+`) so a session-less title like " — Hermes" (which
+    // trims to "— Hermes", separator at index 0) still strips to empty.
+    let re = regex::Regex::new(r"\s*[—–\-|·]\s+[^—–\-|·]+\s*$").unwrap();
+    let stripped = re.replace(raw.trim(), "").trim().to_string();
+    // A remainder that is only separators/whitespace (e.g. a bare "—") is a
+    // transient state, not a real session title — collapse it to empty so the
+    // caller's guard treats it as "no title". Real titles always contain a
+    // non-separator character.
+    if stripped
+        .chars()
+        .all(|c| c.is_whitespace() || "—–-|·".contains(c))
+    {
+        return String::new();
+    }
+    stripped
+}
+
 /// Title pipeline — port of refreshTabTitle (docs/03 § Windows & tabs).
 pub fn display_title(raw: &str, mode: &str, target: &str, healthy: bool) -> String {
-    let re = regex::Regex::new(r"\s+[—\-|·]\s+Hermes(\s+Agent)?\s*$").unwrap();
-    let stripped = re.replace(raw.trim(), "").trim().to_string();
+    let stripped = clean_title(raw);
     if !stripped.is_empty() {
         if stripped.chars().count() > 40 {
             let head: String = stripped.chars().take(38).collect();
@@ -425,6 +455,34 @@ pub fn refresh_title(app: &AppHandle, label: &str) {
     let healthy = state.healthy.load(Ordering::SeqCst);
     let target = prefs::load(app).target_url;
     let _ = w.set_title(&display_title(&raw, &mode, &target, healthy));
+}
+
+/// A content webview reported a new `document.title` via wry's native
+/// title-changed hook (`on_document_title_changed`). This is the sole title
+/// source — it replaces the old injected `EMIT('title')` watcher, which
+/// silently no-ops whenever `window.__TAURI__`/the event IPC isn't available in
+/// a remote-origin webview (issue #15, failure mode #1: tabs stuck on "New
+/// Tab"). Being a native callback, it is immune to that and to the page CSP.
+///
+/// Transient empty/separator-only reports are ignored so a known-good title is
+/// never downgraded to the host fallback (`display_title`'s empty-strip branch)
+/// — issue #15 failure mode #2 ("title instantly resets to Hermes WebUI ●
+/// host"). The 38px strip seed ("New Tab") likewise survives until a real title
+/// arrives.
+pub fn apply_reported_title(app: &AppHandle, label: &str, raw: &str) {
+    if clean_title(raw).is_empty() {
+        return;
+    }
+    if label.starts_with("tab-") {
+        strip::set_tab_title(app, label, raw);
+    } else {
+        app.state::<AppState>()
+            .raw_titles
+            .lock()
+            .unwrap()
+            .insert(label.to_string(), raw.to_string());
+        refresh_title(app, label);
+    }
 }
 
 pub fn refresh_all_titles(app: &AppHandle) {
@@ -611,7 +669,7 @@ pub fn open_prefs(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::display_title;
+    use super::{clean_title, display_title};
 
     #[test]
     fn strips_hermes_suffix_and_truncates() {
@@ -631,6 +689,48 @@ mod tests {
         let long = format!("{} — Hermes", "x".repeat(60));
         let t = display_title(&long, "ssh", "http://localhost:8787", true);
         assert_eq!(t.chars().count(), 39); // 38 + ellipsis
+    }
+
+    #[test]
+    fn strips_non_hermes_suffix() {
+        // The WebUI appends the configured bot name or the profile name, not
+        // always "Hermes" (issue #15). The strip must be generic.
+        assert_eq!(
+            display_title(
+                "Daily standup — Claude",
+                "ssh",
+                "http://localhost:8787",
+                true
+            ),
+            "Daily standup"
+        );
+        assert_eq!(
+            display_title("Budget review — Work", "ssh", "http://localhost:8787", true),
+            "Budget review"
+        );
+        // Only the LAST separator group is removed — an internal em-dash in the
+        // session title itself survives.
+        assert_eq!(
+            display_title(
+                "Plan A — Phase 1 — Hermes",
+                "ssh",
+                "http://localhost:8787",
+                true
+            ),
+            "Plan A — Phase 1"
+        );
+    }
+
+    #[test]
+    fn clean_title_empty_for_transient_states() {
+        // These are the reports the title hook must NOT promote to a tab title;
+        // apply_reported_title drops them so a good title isn't downgraded to
+        // the host fallback (issue #15 failure mode #2).
+        assert_eq!(clean_title(""), "");
+        assert_eq!(clean_title("   "), "");
+        assert_eq!(clean_title(" — Hermes"), "");
+        // A bare title with no separator suffix is meaningful, not transient.
+        assert_eq!(clean_title("Hermes"), "Hermes");
     }
 
     #[test]
