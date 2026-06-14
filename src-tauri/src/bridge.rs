@@ -251,25 +251,6 @@ const WINDOW_OPEN: &str = r##"
   })();
 "##;
 
-/// Title watcher — feeds the native tab/window title pipeline.
-const TITLE_WATCHER: &str = r##"
-  (function () {
-    let last = null;
-    const report = function () {
-      const t = document.title || '';
-      if (t !== last) { last = t; EMIT('title', t); }
-    };
-    const start = function () {
-      report();
-      const el = document.querySelector('title');
-      if (el) new MutationObserver(report).observe(el, { childList: true, characterData: true, subtree: true });
-      setInterval(report, 2000);
-    };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
-    else start();
-  })();
-"##;
-
 /// SSH footer — 28px status bar pinned to the bottom, tinted with the exact
 /// page background (Swift parity: the footer is the only chrome painted with
 /// the page RGB). Injected only in ssh-mode windows. The native side drives
@@ -445,7 +426,6 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     parts.push(THEME_BRIDGE);
     parts.push(NOTIFY_WATCHER);
     parts.push(WINDOW_OPEN);
-    parts.push(TITLE_WATCHER);
     parts.push(FIND_BAR);
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         parts.push(DOWNLOAD_BRIDGE);
@@ -481,16 +461,10 @@ pub fn install(app: &AppHandle) {
         let label = payload["label"].as_str().unwrap_or("").to_string();
         let kind = payload["kind"].as_str().unwrap_or("");
         match kind {
-            "title" => {
-                let raw = payload["value"].as_str().unwrap_or("").to_string();
-                if label.starts_with("tab-") {
-                    crate::strip::set_tab_title(&handle, &label, &raw);
-                } else {
-                    let state = handle.state::<AppState>();
-                    state.raw_titles.lock().unwrap().insert(label.clone(), raw);
-                    windows::refresh_title(&handle, &label);
-                }
-            }
+            // NOTE: titles no longer arrive via this bridge — they're sourced
+            // natively through wry's on_document_title_changed hook (see
+            // windows::apply_reported_title), which works even when the
+            // remote-webview IPC that powers EMIT() is unavailable (issue #15).
             "theme" => {
                 if let Some(css) = payload["value"].as_str() {
                     handle_theme_report(&handle, css);
