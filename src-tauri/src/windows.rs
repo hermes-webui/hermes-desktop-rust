@@ -4,7 +4,22 @@
 use crate::state::{AppState, TunnelStatus};
 use crate::{bridge, prefs, strip, theme};
 use std::sync::atomic::Ordering;
+use std::sync::LazyLock;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+/// Title-segment separators the WebUI may place before its trailing name
+/// suffix. Shared by the suffix regex and the separator-only collapse check in
+/// `clean_title` so the two can't drift. The hyphen is last so it reads as a
+/// literal inside the regex character classes built below.
+const TITLE_SEPARATORS: &str = "—–|·-";
+
+/// Matches a trailing ` <sep> <segment>` suffix (segment is separator-free, so
+/// only the LAST separator group is removed). Leading `\s*` (not `\s+`) so a
+/// session-less title like " — Hermes" (trims to "— Hermes", separator at
+/// index 0) still strips to empty. Compiled once.
+static TITLE_SUFFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(&format!(r"\s*[{s}]\s+[^{s}]+\s*$", s = TITLE_SEPARATORS)).unwrap()
+});
 
 pub const TABBING_ID: &str = "ai.get-hermes.HermesWebUIDesktop.main";
 
@@ -389,17 +404,14 @@ fn push_tunnel_status(
 /// itself is preserved ("Plan A — Phase 1 — Hermes" → "Plan A — Phase 1").
 /// Returns empty when the title is empty or separator/suffix-only.
 pub fn clean_title(raw: &str) -> String {
-    // Leading `\s*` (not `\s+`) so a session-less title like " — Hermes" (which
-    // trims to "— Hermes", separator at index 0) still strips to empty.
-    let re = regex::Regex::new(r"\s*[—–\-|·]\s+[^—–\-|·]+\s*$").unwrap();
-    let stripped = re.replace(raw.trim(), "").trim().to_string();
+    let stripped = TITLE_SUFFIX_RE.replace(raw.trim(), "").trim().to_string();
     // A remainder that is only separators/whitespace (e.g. a bare "—") is a
     // transient state, not a real session title — collapse it to empty so the
     // caller's guard treats it as "no title". Real titles always contain a
     // non-separator character.
     if stripped
         .chars()
-        .all(|c| c.is_whitespace() || "—–-|·".contains(c))
+        .all(|c| c.is_whitespace() || TITLE_SEPARATORS.contains(c))
     {
         return String::new();
     }
