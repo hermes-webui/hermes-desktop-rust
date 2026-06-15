@@ -256,6 +256,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         entry.tabs.push(TabEntry {
             label: tab_label.clone(),
             title: "New Tab".into(),
+            attention: false,
         });
         entry.active = entry.tabs.len() - 1;
     }
@@ -447,8 +448,10 @@ pub fn layout(app: &AppHandle, window_label: &str) {
     }
 }
 
-/// Title reported by a tab's title-watcher script.
-pub fn set_tab_title(app: &AppHandle, tab_label: &str, raw: &str) {
+/// A tab reported a new title (marker-free) and its pending-attention state.
+/// Called from `windows::apply_reported_title`, which sources both from wry's
+/// native title-changed hook and has already stripped the "● " marker.
+pub fn set_tab_title(app: &AppHandle, tab_label: &str, title: &str, attention: bool) {
     let Some(window_label) = window_of_tab(tab_label) else {
         return;
     };
@@ -457,13 +460,14 @@ pub fn set_tab_title(app: &AppHandle, tab_label: &str, raw: &str) {
         .raw_titles
         .lock()
         .unwrap()
-        .insert(tab_label.to_string(), raw.to_string());
+        .insert(tab_label.to_string(), title.to_string());
     {
         let mut strip = state.strip.lock().unwrap();
         if let Some(entry) = strip.get_mut(&window_label) {
             if let Some(tab) = entry.tabs.iter_mut().find(|t| t.label == tab_label) {
                 let p = prefs::load(app);
-                tab.title = windows::display_title(raw, &p.connection_mode, &p.target_url, true);
+                tab.title = windows::display_title(title, &p.connection_mode, &p.target_url, true);
+                tab.attention = attention;
             }
         }
     }

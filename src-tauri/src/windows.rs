@@ -7,6 +7,24 @@ use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+/// The WebUI prepends this glyph (U+25CF + space) to `document.title` when the
+/// view's active session has a pending approval/clarify popup waiting on the
+/// user (hermes-webui `ui.js` `syncTopbar`, #4121). Each tab is its own webview
+/// reporting its own title, so this is a per-tab "needs attention" signal — the
+/// input for the strip's attention badge (issue #14).
+const ATTENTION_MARKER: char = '●';
+
+/// Split a reported `document.title` into (pending-attention, marker-free
+/// title). The marker is stripped so it never leaks into the displayed title
+/// text (the strip renders a proper badge instead, and the macOS window title
+/// stays clean).
+pub fn split_attention(raw: &str) -> (bool, &str) {
+    match raw.trim_start().strip_prefix(ATTENTION_MARKER) {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, raw),
+    }
+}
+
 /// Title-segment separators the WebUI may place before its trailing name
 /// suffix. Shared by the suffix regex and the separator-only collapse check in
 /// `clean_title` so the two can't drift. The hyphen is last so it reads as a
@@ -482,17 +500,20 @@ pub fn refresh_title(app: &AppHandle, label: &str) {
 /// host"). The 38px strip seed ("New Tab") likewise survives until a real title
 /// arrives.
 pub fn apply_reported_title(app: &AppHandle, label: &str, raw: &str) {
-    if clean_title(raw).is_empty() {
+    let (attention, title) = split_attention(raw);
+    if clean_title(title).is_empty() {
         return;
     }
     if label.starts_with("tab-") {
-        strip::set_tab_title(app, label, raw);
+        strip::set_tab_title(app, label, title, attention);
     } else {
+        // macOS / regular content windows: no per-tab badge, but store the
+        // marker-free title so the native window title never shows a stray "●".
         app.state::<AppState>()
             .raw_titles
             .lock()
             .unwrap()
-            .insert(label.to_string(), raw.to_string());
+            .insert(label.to_string(), title.to_string());
         refresh_title(app, label);
     }
 }
@@ -681,7 +702,28 @@ pub fn open_prefs(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_title, display_title};
+    use super::{clean_title, display_title, split_attention};
+
+    #[test]
+    fn splits_pending_attention_marker() {
+        // WebUI prepends "● " for a session with a pending approval/clarify.
+        assert_eq!(
+            split_attention("● My session — Hermes"),
+            (true, "My session — Hermes")
+        );
+        // No marker → not flagged, title untouched.
+        assert_eq!(
+            split_attention("My session — Hermes"),
+            (false, "My session — Hermes")
+        );
+        // Marker survives the suffix strip downstream and yields a real title.
+        let (attn, body) = split_attention("● Untitled — Hermes");
+        assert!(attn);
+        assert_eq!(
+            display_title(body, "ssh", "http://localhost:8787", true),
+            "Untitled"
+        );
+    }
 
     #[test]
     fn strips_hermes_suffix_and_truncates() {

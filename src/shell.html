@@ -56,6 +56,22 @@
         text-overflow: ellipsis;
         font-size: 12px;
       }
+      /* Attention dot: a tab whose session has a pending approval/clarify
+         popup waiting on the user (issue #14). */
+      .tab .attn {
+        flex: none;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #ff9f0a;
+        box-shadow: 0 0 0 2px rgba(255, 159, 10, 0.35);
+      }
+      .tab.attention {
+        color: var(--hermes-fg);
+      }
+      .tab.attention:not(.active) {
+        background: rgba(255, 159, 10, 0.12);
+      }
       .tab .x {
         flex: none;
         width: 18px;
@@ -143,8 +159,19 @@
         root.textContent = "";
         snapshot.tabs.forEach((tab, i) => {
           const el = document.createElement("div");
-          el.className = "tab" + (i === snapshot.active ? " active" : "");
-          el.title = tab.title;
+          el.className =
+            "tab" +
+            (i === snapshot.active ? " active" : "") +
+            (tab.attention ? " attention" : "");
+          el.title = tab.attention
+            ? (tab.title || "New Tab") + " — waiting for you"
+            : tab.title;
+          if (tab.attention) {
+            const dot = document.createElement("span");
+            dot.className = "attn";
+            dot.setAttribute("aria-label", "waiting for you");
+            el.appendChild(dot);
+          }
           const t = document.createElement("span");
           t.className = "t";
           t.textContent = tab.title || "New Tab";

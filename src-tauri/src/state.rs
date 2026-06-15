@@ -17,6 +17,11 @@ pub enum TunnelStatus {
 pub struct TabEntry {
     pub label: String,
     pub title: String,
+    /// The tab's session has a pending approval/clarify popup waiting on the
+    /// user. Derived from the WebUI's leading "● " title marker (issue #14);
+    /// the strip renders an attention badge so a blocked background tab is
+    /// findable without clicking through every tab.
+    pub attention: bool,
 }
 
 /// Per-window tab state for strip mode.
