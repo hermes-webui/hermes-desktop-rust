@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.3.6]
+
+### Added
+
+- **Windows/Linux: tabs now badge when a session is waiting on you.** When a
+  background tab raises a tool-approval or clarify/question popup, you used to
+  see only a momentary flash and had to click through every tab to find the
+  blocked one. Such tabs now show an amber attention dot (and a subtle tint) in
+  the tab strip, so the session waiting for input is obvious at a glance. The
+  signal is the WebUI's existing pending-prompt title marker, read per-tab
+  through the native title hook — no extra polling. (#14, reported by b3nw.)
+
 ## [v0.3.5] — 2026-06-14
 
 ### Fixed
