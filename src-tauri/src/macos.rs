@@ -59,6 +59,15 @@ fn dispatch_main_async(f: impl FnOnce() + Send + 'static) {
     };
 }
 
+/// Run a closure on the GCD main queue — drained by the runloop *between* tao
+/// callouts, so the handler mutex is free. Use this for main-thread work that
+/// pumps the run loop (e.g. the native cookie read/write, which spins
+/// `acceptInputForMode`): doing that inside a tao callout would re-enter
+/// `draw_rect` and self-deadlock the main thread (invariant #12).
+pub fn run_on_main_async(f: impl FnOnce() + Send + 'static) {
+    dispatch_main_async(f);
+}
+
 /// Attach `new_win` to `host`'s native tab group (Cmd+T behavior).
 pub fn add_tabbed_window(host: &WebviewWindow, new_win: &WebviewWindow) {
     let host2 = host.clone();
