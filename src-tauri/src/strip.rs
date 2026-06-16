@@ -11,8 +11,9 @@
 use crate::state::{AppState, TabEntry, WindowTabs};
 use crate::{bridge, prefs, tunnel, windows};
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use tauri::webview::{Color, WebviewBuilder};
+use tauri::webview::{Color, Cookie, WebviewBuilder};
 use tauri::window::WindowBuilder;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, Window, Wry,
@@ -50,6 +51,40 @@ fn content_bounds(win: &Window<Wry>) -> (LogicalPosition<f64>, LogicalSize<f64>)
         LogicalPosition::new(0.0, STRIP_HEIGHT),
         LogicalSize::new(size.width, (size.height - STRIP_HEIGHT).max(0.0)),
     )
+}
+
+/// Per-tab webview data partition path. Each tab gets its own directory → its
+/// own cookie jar, so the WebUI's HttpOnly `hermes_profile` cookie (and the
+/// login session) is scoped to that tab instead of shared across every tab
+/// through one store — the profile-bleed root cause in issue #3.
+fn tab_partition_dir(app: &AppHandle, tab_label: &str) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|d| d.join("tab-partitions").join(tab_label))
+}
+
+/// Best-effort removal of a closed tab's data partition. The startup wipe
+/// (`clear_partitions`) is the safety net if this fails because the OS still
+/// holds the folder open immediately after the webview is destroyed.
+fn remove_tab_partition(app: &AppHandle, tab_label: &str) {
+    if let Some(dir) = tab_partition_dir(app, tab_label) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Wipe all tab data partitions. Called once at startup before any tab opens:
+/// partitions are session-scoped (chats live server-side), so orphans from a
+/// prior run or a crash would otherwise accumulate. No-op when none exist.
+pub fn clear_partitions(app: &AppHandle) {
+    if let Ok(base) = app.path().app_local_data_dir() {
+        let dir = base.join("tab-partitions");
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                log::warn!("strip: could not clear tab partitions: {e}");
+            }
+        }
+    }
 }
 
 /// Open a new strip window with its first tab. Runs on the caller's thread —
@@ -180,13 +215,19 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
     let allowed_host = target.host_str().map(|h| h.to_lowercase());
 
     let state = app.state::<AppState>();
-    let tab_label = {
+    let (tab_label, opener_label) = {
         let mut strip = state.strip.lock().unwrap();
         let Some(entry) = strip.get_mut(window_label) else {
             return;
         };
+        // The currently-active tab is the opener we seed the new tab's cookies
+        // from (captured before the new tab is pushed and made active).
+        let opener = entry.tabs.get(entry.active).map(|t| t.label.clone());
         entry.tab_seq += 1;
-        format!("tab-{}-{}", window_seq(window_label), entry.tab_seq)
+        (
+            format!("tab-{}-{}", window_seq(window_label), entry.tab_seq),
+            opener,
+        )
     };
 
     let (r, g, b) = prefs::pre_paint_color(app);
@@ -202,10 +243,53 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
     // No injected ssh footer in strip mode — status lives in the strip.
     let init = bridge::init_script(&tab_label, &hex, false);
 
+    // Per-tab cookie isolation (issue #3): the WebUI picks the active profile
+    // via an HttpOnly `hermes_profile` cookie, so a shared cookie jar makes the
+    // profile effectively global — switching profile in one tab bleeds into all
+    // the others. Give each tab its own data partition (separate jar), and seed
+    // it from the opener so a new tab still inherits the current profile + login
+    // (then diverges). Windows/Linux only: WKWebView has no data_directory, and
+    // macOS uses native tabs which this module doesn't drive.
+    let isolate = cfg!(not(target_os = "macos"));
+    let partition = if isolate {
+        tab_partition_dir(app, &tab_label)
+    } else {
+        None
+    };
+    if let Some(ref dir) = partition {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Read the opener's cookies for the target origin BEFORE the new webview is
+    // created. Safe here: add_tab runs on a worker thread, so Tauri's cookie
+    // dispatcher marshals to the UI thread without the main-thread deadlock the
+    // docs warn about. (`hermes_profile` is HttpOnly, but the native cookie
+    // store API sees it.)
+    let seed: Vec<Cookie<'static>> = if partition.is_some() {
+        opener_label
+            .and_then(|lbl| find_webview(&win, &lbl))
+            .or_else(|| focused_active_webview(app))
+            .and_then(|wv| wv.cookies_for_url(target.clone()).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // When isolating, load about:blank first so cookies can be seeded before
+    // the real navigation — otherwise the first request would race the seed and
+    // the tab would briefly load the wrong profile.
+    let initial_url = if partition.is_some() {
+        WebviewUrl::External(url::Url::parse("about:blank").unwrap())
+    } else {
+        WebviewUrl::External(target.clone())
+    };
+
     let nav_app = app.clone();
     let load_window = window_label.to_string();
-    let wb = WebviewBuilder::new(&tab_label, WebviewUrl::External(target))
-        .background_color(bg)
+    let mut wb = WebviewBuilder::new(&tab_label, initial_url).background_color(bg);
+    if let Some(ref dir) = partition {
+        wb = wb.data_directory(dir.clone());
+    }
+    let wb = wb
         .initialization_script(&init)
         .on_navigation(move |url| {
             windows::navigation_allowed(&nav_app, url, allowed_host.as_deref())
@@ -218,6 +302,10 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         })
         .on_page_load(move |webview, payload| {
             if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                return;
+            }
+            // Ignore the pre-seed about:blank load (isolated tabs only).
+            if payload.url().scheme() == "about" {
                 return;
             }
             let app = webview.app_handle().clone();
@@ -242,6 +330,19 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             return;
         }
     };
+
+    // Seed the isolated jar from the opener, then load the real target. The
+    // cookies are committed before the navigation request fires (WebKitGTK's
+    // set_cookie is synchronous; WebView2's AddOrUpdateCookie completes before
+    // navigate), so the first load already carries the inherited profile.
+    if partition.is_some() {
+        for cookie in seed {
+            let _ = webview.set_cookie(cookie);
+        }
+        if let Err(e) = webview.navigate(target.clone()) {
+            log::error!("strip: tab navigate failed: {e}");
+        }
+    }
 
     {
         let mut strip = state.strip.lock().unwrap();
@@ -343,6 +444,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     if let Some(wv) = find_webview(&win, tab_label) {
         let _ = wv.close();
     }
+    remove_tab_partition(app, tab_label);
     if let Some(next) = next_active {
         select_tab(app, window_label, &next);
     }
@@ -534,9 +636,14 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
     let state = app.state::<AppState>();
     let removed = state.strip.lock().unwrap().remove(window_label);
     if let Some(entry) = removed {
-        let mut titles = state.raw_titles.lock().unwrap();
-        for tab in entry.tabs {
-            titles.remove(&tab.label);
+        {
+            let mut titles = state.raw_titles.lock().unwrap();
+            for tab in &entry.tabs {
+                titles.remove(&tab.label);
+            }
+        }
+        for tab in &entry.tabs {
+            remove_tab_partition(app, &tab.label);
         }
     }
 }

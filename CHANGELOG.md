@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.3.7]
+
+### Fixed
+
+- **Windows/Linux: multiple tabs on different profiles no longer bleed into
+  each other.** The WebUI scopes the active profile to a per-client HttpOnly
+  `hermes_profile` cookie, but every tab shared one cookie jar — so switching
+  profile in one tab flipped it for all of them: the sidebar stuck to the
+  last-loaded profile, other profiles' active chats went missing, and the
+  default workspace intermittently failed to apply. Each tab now gets its own
+  isolated data partition (its own cookie jar), so profile selection is
+  genuinely per-tab — the same isolation you get from separate browser windows.
+  A new tab is seeded with the opener tab's profile + login cookies, so it still
+  opens on your current profile (and stays logged in) and only diverges when you
+  switch it. Partitions are session-scoped and cleared on tab close and at
+  startup. (#3, reported by b3nw and Lemz.)
+
 ## [v0.3.6] — 2026-06-14
 
 ### Added
