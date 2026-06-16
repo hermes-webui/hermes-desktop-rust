@@ -257,6 +257,15 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         None
     };
     if let Some(ref dir) = partition {
+        // Guarantee a FRESH jar at the point of use. Tab labels are
+        // deterministic and recur every run (window_seq resets to 0 at
+        // startup, so the first tab is always `tab-1-1`), while both the
+        // per-close removal and the startup `clear_partitions` wipe are
+        // best-effort — the OS can hold the WebView2 folder open. If both ever
+        // fail, a same-named tab would otherwise inherit a prior session's
+        // cookies (stale profile/login) instead of opening on the default.
+        // Removing here makes session-scoping hold regardless of cleanup.
+        let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::create_dir_all(dir);
     }
     // Read the opener's cookies for the target origin BEFORE the new webview is
