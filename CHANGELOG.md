@@ -13,6 +13,12 @@
   switch it — the same behavior the Windows/Linux fix gives. The first window
   keeps the persistent store, so a single-window setup still remembers your
   profile and login across restarts. (#3, reported by the maintainer on macOS.)
+- **A new tab now reliably inherits the current tab's profile.** The seed copied
+  the opener's cookies via a URL-filtered lookup, but that lookup drops
+  host-only cookies on macOS — and the WebUI sets the profile cookie host-only —
+  so a new tab fell back to the default profile instead of the one you were on.
+  Seeding now copies the opener's whole cookie store (a tab only ever loads one
+  origin), so the profile cookie transfers on every platform.
 
 ## [v0.3.7] — 2026-06-16
 

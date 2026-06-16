@@ -268,36 +268,45 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::create_dir_all(dir);
     }
-    // Read the opener's cookies for the target origin BEFORE the new webview is
-    // created. Safe here: add_tab runs on a worker thread, so Tauri's cookie
-    // dispatcher marshals to the UI thread without the main-thread deadlock the
-    // docs warn about. (`hermes_profile` is HttpOnly, but the native cookie
-    // store API sees it.)
+    // Read the opener's cookies BEFORE the new webview is created. Safe here:
+    // add_tab runs on a worker thread, so Tauri's cookie dispatcher marshals to
+    // the UI thread without the main-thread deadlock the docs warn about.
+    // (`hermes_profile` is HttpOnly, but the native cookie store API sees it.)
+    //
+    // Use cookies() (whole store), NOT cookies_for_url(): the latter filters by
+    // URL, and on WKWebView that filter drops host-only cookies entirely — the
+    // WebUI sets `hermes_profile` host-only (no Domain attribute), which is the
+    // macOS inheritance bug (#3). Win/Linux match host-only cookies correctly,
+    // but a content tab only ever loads the one target origin, so its whole
+    // store IS the target's cookies — cookies() is the robust, uniform choice
+    // across all three platforms.
     let seed: Vec<Cookie<'static>> = if partition.is_some() {
         match opener_label
             .and_then(|lbl| find_webview(&win, &lbl))
             .or_else(|| focused_active_webview(app))
         {
-            Some(opener) => {
-                match opener.cookies_for_url(target.clone()) {
-                    Ok(cookies) => {
-                        log::debug!(
-                            "strip: seeding {tab_label} from opener ({} cookies)",
-                            cookies.len()
-                        );
-                        cookies
-                    }
-                    // Fail open to the default profile (and re-login if auth) — log
-                    // so the multi-profile smoke can tell a seed-read failure apart
-                    // from a genuinely empty jar.
-                    Err(e) => {
-                        log::debug!("strip: seed read failed for {tab_label}: {e} (opens on default profile)");
-                        Vec::new()
-                    }
+            Some(opener) => match opener.cookies() {
+                Ok(cookies) => {
+                    let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
+                    log::info!(
+                        "strip: seeding {tab_label} from opener — {} cookie(s): {:?}",
+                        cookies.len(),
+                        names
+                    );
+                    cookies
                 }
-            }
+                // Fail open to the default profile (and re-login if auth) — log
+                // so the multi-profile smoke can tell a seed-read failure apart
+                // from a genuinely empty jar.
+                Err(e) => {
+                    log::warn!(
+                        "strip: seed read failed for {tab_label} (opens on default profile): {e}"
+                    );
+                    Vec::new()
+                }
+            },
             None => {
-                log::debug!("strip: no opener for {tab_label} (opens on default profile)");
+                log::info!("strip: no opener for {tab_label} (opens on default profile)");
                 Vec::new()
             }
         }
