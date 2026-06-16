@@ -193,6 +193,9 @@ fn main() {
                 app.set_menu(m)?;
             }
             bridge::install(&handle);
+            // Wipe stale per-tab cookie partitions from a prior run before any
+            // tab opens (issue #3 — partitions are session-scoped).
+            strip::clear_partitions(&handle);
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 // Conflict with the Swift app's identical default is expected
