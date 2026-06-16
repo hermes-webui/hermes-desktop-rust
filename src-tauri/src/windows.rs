@@ -375,16 +375,34 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
         if let Some(opener) = host_window {
             let new_win = win.clone();
             crate::macos::run_on_main_async(move || {
-                let seed = opener
-                    .cookies_for_url(seed_target.clone())
-                    .unwrap_or_default();
-                log::debug!(
-                    "open_browser: seeding {} from opener ({} cookies)",
-                    new_win.label(),
-                    seed.len()
-                );
-                for cookie in seed {
-                    let _ = new_win.set_cookie(cookie);
+                // Use cookies() (whole store), NOT cookies_for_url(): on
+                // WKWebView the latter filters by an exact
+                // `cookie.domain() == url.domain()` match, which drops the
+                // host-only `hermes_profile`/`hermes_session` cookies (the
+                // WebUI sets them with no Domain attribute) and returns nothing
+                // — the macOS "new tab doesn't inherit the profile" bug (#3).
+                // The opener only ever loads the one target origin, so its whole
+                // store IS the target's cookies.
+                match opener.cookies() {
+                    Ok(seed) => {
+                        let names: Vec<&str> = seed.iter().map(|c| c.name()).collect();
+                        log::info!(
+                            "open_browser: seeding {} from {} — {} cookie(s): {:?}",
+                            new_win.label(),
+                            opener.label(),
+                            seed.len(),
+                            names
+                        );
+                        for cookie in seed {
+                            if let Err(e) = new_win.set_cookie(cookie) {
+                                log::warn!("open_browser: set_cookie failed: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => log::warn!(
+                        "open_browser: seed read failed for {} (opens on default profile): {e}",
+                        new_win.label()
+                    ),
                 }
                 if let Err(e) = new_win.navigate(seed_target) {
                     log::error!("open_browser: seed navigate failed: {e}");
