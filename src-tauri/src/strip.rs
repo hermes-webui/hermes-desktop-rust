@@ -274,11 +274,33 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
     // docs warn about. (`hermes_profile` is HttpOnly, but the native cookie
     // store API sees it.)
     let seed: Vec<Cookie<'static>> = if partition.is_some() {
-        opener_label
+        match opener_label
             .and_then(|lbl| find_webview(&win, &lbl))
             .or_else(|| focused_active_webview(app))
-            .and_then(|wv| wv.cookies_for_url(target.clone()).ok())
-            .unwrap_or_default()
+        {
+            Some(opener) => {
+                match opener.cookies_for_url(target.clone()) {
+                    Ok(cookies) => {
+                        log::debug!(
+                            "strip: seeding {tab_label} from opener ({} cookies)",
+                            cookies.len()
+                        );
+                        cookies
+                    }
+                    // Fail open to the default profile (and re-login if auth) — log
+                    // so the multi-profile smoke can tell a seed-read failure apart
+                    // from a genuinely empty jar.
+                    Err(e) => {
+                        log::debug!("strip: seed read failed for {tab_label}: {e} (opens on default profile)");
+                        Vec::new()
+                    }
+                }
+            }
+            None => {
+                log::debug!("strip: no opener for {tab_label} (opens on default profile)");
+                Vec::new()
+            }
+        }
     } else {
         Vec::new()
     };
