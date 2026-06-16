@@ -181,6 +181,23 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
     let host_window = focused_or_recent_content(app);
     let is_first = host_window.is_none();
 
+    // macOS per-tab cookie isolation (issue #3): native-tab webviews share one
+    // WKWebsiteDataStore by default, so the WebUI's HttpOnly `hermes_profile`
+    // cookie bleeds across tabs — switching profile in one tab flips it in all.
+    // Each window now gets its own ephemeral store via `incognito` (set in the
+    // macOS builder block below). When there's an opener, seed its cookies so
+    // the new tab still inherits the current profile + login, loading
+    // about:blank first so the seed lands before the real navigation — the same
+    // approach the Windows/Linux strip uses (#3 / v0.3.7).
+    let seed_macos = cfg!(target_os = "macos") && host_window.is_some();
+    #[cfg(target_os = "macos")]
+    let seed_target = target.clone();
+    let initial_url = if seed_macos {
+        url::Url::parse("about:blank").unwrap()
+    } else {
+        target
+    };
+
     let nav_app = app.clone();
     let load_label = label.clone();
     let load_mode = p.connection_mode.clone();
@@ -188,7 +205,7 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
     let load_port = p.local_port.clone();
 
     #[allow(unused_mut)]
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(target))
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(initial_url))
         .title("Hermes WebUI")
         .inner_size(1280.0, 830.0)
         // Chrome (titlebar/tab bar) opens in the cached page theme — never
@@ -206,6 +223,11 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
         })
         .on_page_load(move |webview, payload| {
             if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                return;
+            }
+            // Skip the pre-seed about:blank load (macOS seeded tabs): reveal,
+            // zoom and chrome replay only apply to the real target page.
+            if payload.url().scheme() == "about" {
                 return;
             }
             let app = webview.app_handle().clone();
@@ -241,7 +263,14 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
         builder = builder
             .title_bar_style(TitleBarStyle::Overlay)
             .hidden_title(true)
-            .tabbing_identifier(TABBING_ID);
+            .tabbing_identifier(TABBING_ID)
+            // Per-tab cookie isolation (issue #3): give each tab opened from an
+            // existing one its own ephemeral WKWebsiteDataStore so the profile
+            // cookie can't bleed across native tabs. The first window (no
+            // opener) keeps the default persistent store — it's the only window
+            // using it, so nothing shares a jar, and login/profile still persist
+            // across restarts for the common single-window case.
+            .incognito(seed_macos);
     }
 
     let win = match builder.build() {
@@ -333,6 +362,35 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
                 let _ = w2.show();
             }
         });
+    }
+
+    // macOS: seed the new (incognito) window's jar from the opener, then load
+    // the real target. Deferred to the GCD main queue (run_on_main_async) so
+    // the cookie reads/writes — which pump the main run loop — run BETWEEN tao
+    // callouts, never inside one (invariant #12: pumping while tao's handler
+    // mutex is held re-enters draw_rect and self-deadlocks). Queued last so it
+    // runs after the addTabbedWindow block.
+    #[cfg(target_os = "macos")]
+    if seed_macos {
+        if let Some(opener) = host_window {
+            let new_win = win.clone();
+            crate::macos::run_on_main_async(move || {
+                let seed = opener
+                    .cookies_for_url(seed_target.clone())
+                    .unwrap_or_default();
+                log::debug!(
+                    "open_browser: seeding {} from opener ({} cookies)",
+                    new_win.label(),
+                    seed.len()
+                );
+                for cookie in seed {
+                    let _ = new_win.set_cookie(cookie);
+                }
+                if let Err(e) = new_win.navigate(seed_target) {
+                    log::error!("open_browser: seed navigate failed: {e}");
+                }
+            });
+        }
     }
 
     set_offline_badge(app, false);

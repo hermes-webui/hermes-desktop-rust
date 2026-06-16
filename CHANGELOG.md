@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.3.8]
+
+### Fixed
+
+- **macOS: multiple tabs on different profiles bled into each other** (the
+  v0.3.7 fix only covered the Windows/Linux tab strip). macOS uses native
+  window tabs, which shared one cookie store, so switching profile in one tab
+  switched the others too. Each tab opened from an existing one now gets its own
+  isolated (ephemeral) cookie store, seeded with the opener tab's profile +
+  login so it still opens on your current profile and only diverges when you
+  switch it — the same behavior the Windows/Linux fix gives. The first window
+  keeps the persistent store, so a single-window setup still remembers your
+  profile and login across restarts. (#3, reported by the maintainer on macOS.)
+
 ## [v0.3.7] — 2026-06-16
 
 ### Fixed
