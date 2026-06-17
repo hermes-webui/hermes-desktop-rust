@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.4.1] — 2026-06-17
+
+### Fixed
+
+- **macOS: dragging the window by the title bar with a single tab open now
+  actually works** (issue #22). The v0.4.0 attempt used the CSS
+  `-webkit-app-region: drag`, which is a Chromium/Electron feature that macOS's
+  WebKit webview ignores — so it was a no-op and the window still couldn't be
+  moved. The real cause: the window-drag was driven by Tauri's
+  `data-tauri-drag-region`, but the command it invokes (`start_dragging`) was
+  never permitted for the remote page, so it silently did nothing. The
+  permission is now granted (narrowly — only window dragging, nothing else), and
+  the whole title bar is a drag region (its buttons/links still click). With two
+  or more tabs the native tab bar already provided dragging, which is why the
+  bug only appeared with a single tab.
+
 ## [v0.4.0] — 2026-06-17
 
 A tabs & sessions release across macOS, Windows, and Linux.
