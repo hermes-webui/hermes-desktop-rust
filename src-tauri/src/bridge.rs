@@ -59,20 +59,23 @@ const PASTE_SUPPRESS: &str = r##"
 
 /// S7/S8/S9 — macOS overlay-titlebar integration: traffic-light clearance,
 /// hide the page logo (collides with traffic lights), CSS rule for hiding the
-/// page titlebar when the native tab bar shows, and a NATIVE drag region on
-/// `.app-titlebar`.
+/// page titlebar when the native tab bar shows, and the window drag region.
 ///
-/// Window dragging uses WKWebView's built-in `-webkit-app-region: drag` (the
-/// same mechanism AppKit/Electron use for frameless drag) rather than Tauri's
-/// `data-tauri-drag-region`. The Tauri attribute drives dragging through a
-/// JS→native IPC that is unreliable in remote-origin webviews — the same
-/// remote-IPC fragility that broke titles (#15) and external links (#12) — so
-/// with a single tab (no native tab bar to drag) the window couldn't be moved
-/// at all (issue #22). `-webkit-app-region` is honored natively by WKWebView,
-/// independent of IPC/CSP/capability scope, and works regardless of tab count.
-/// Interactive children are marked `no-drag` so the titlebar's buttons/inputs
-/// still receive clicks. The `data-tauri-drag-region` attribute is kept as a
-/// belt-and-suspenders fallback (harmless when the CSS already handles it).
+/// Window dragging uses Tauri's `data-tauri-drag-region` (Tauri's injected
+/// `drag.js` listens for a mousedown in the region and invokes
+/// `plugin:window|start_dragging`). NOTE: macOS WKWebView does NOT support
+/// Chromium's `-webkit-app-region: drag` despite the prefix — that's an
+/// Electron/Chromium feature, so an earlier attempt using it was a silent
+/// no-op. The Tauri attribute was already present but couldn't move the window
+/// because the remote-content capability granted only `core:event:default`, so
+/// the `start_dragging` command was denied; granting
+/// `core:window:allow-start-dragging` (capabilities/content.json) is what
+/// actually fixes single-tab dragging (issue #22). With 2+ tabs the native tab
+/// bar provided its own drag region, which is why the bug only showed with one.
+///
+/// `deep` makes the entire titlebar a drag region; `drag.js` automatically
+/// exempts interactive descendants (button/a/input/select/[role]/contenteditable
+/// /tabindex), so the titlebar's controls still receive their clicks.
 const MACOS_TITLEBAR: &str = r##"
   try { document.documentElement.style.setProperty('--traffic-light-width', '80px'); } catch (e) {}
   (function () {
@@ -80,11 +83,7 @@ const MACOS_TITLEBAR: &str = r##"
       var s = document.createElement('style');
       s.textContent =
         '.app-titlebar-icon { visibility: hidden !important; } ' +
-        'body.hermes-mac-tabbed .app-titlebar { display: none !important; } ' +
-        '.app-titlebar { -webkit-app-region: drag; } ' +
-        '.app-titlebar button, .app-titlebar a, .app-titlebar input, .app-titlebar select, ' +
-        '.app-titlebar textarea, .app-titlebar [role="button"], .app-titlebar [contenteditable], ' +
-        '.app-titlebar [data-no-drag] { -webkit-app-region: no-drag; }';
+        'body.hermes-mac-tabbed .app-titlebar { display: none !important; }';
       (document.head || document.documentElement).appendChild(s);
     } catch (e) {}
   })();
@@ -92,7 +91,8 @@ const MACOS_TITLEBAR: &str = r##"
     var attach = function () {
       try {
         var tb = document.querySelector('.app-titlebar');
-        if (tb && !tb.hasAttribute('data-tauri-drag-region')) tb.setAttribute('data-tauri-drag-region', '');
+        if (tb && tb.getAttribute('data-tauri-drag-region') !== 'deep')
+          tb.setAttribute('data-tauri-drag-region', 'deep');
       } catch (e) {}
     };
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);

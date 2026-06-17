@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "content-windows",
-  "description": "Minimal IPC for remote hermes-webui content webviews: injected bridge scripts may only emit events",
+  "description": "Minimal IPC for remote hermes-webui content webviews: injected bridge scripts may emit events, plus window-drag so the page titlebar can move the window (issue #22)",
   "windows": ["main-*"],
   "webviews": ["main-*", "tab-*"],
   "remote": {
@@ -17,6 +17,7 @@
     ]
   },
   "permissions": [
-    "core:event:default"
+    "core:event:default",
+    "core:window:allow-start-dragging"
   ]
 }
