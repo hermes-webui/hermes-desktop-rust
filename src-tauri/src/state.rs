@@ -22,6 +22,12 @@ pub struct TabEntry {
     /// the strip renders an attention badge so a blocked background tab is
     /// findable without clicking through every tab.
     pub attention: bool,
+    /// The active WebUI profile for this tab — the value of its per-tab
+    /// `hermes_profile` cookie (None = the default profile). Read from the
+    /// tab's isolated cookie jar after each real page load. Drives the strip's
+    /// per-tab profile dot (issue #8) and is persisted so a restored tab
+    /// reopens on the same profile (issue #18).
+    pub profile: Option<String>,
 }
 
 /// Per-window tab state for strip mode.
@@ -52,6 +58,24 @@ pub struct AppState {
     pub ui_state: Mutex<HashMap<String, (bool, bool)>>,
     /// Strip-mode (Windows/Linux) tab registry: window label -> tabs.
     pub strip: Mutex<HashMap<String, WindowTabs>>,
+    /// macOS only: content-window label -> active `hermes_profile` value (the
+    /// strip stores this per-TabEntry instead). Absent = default profile.
+    /// Feeds session capture so a restored native tab reopens on its profile.
+    pub window_profiles: Mutex<HashMap<String, String>>,
+    /// Set once the saved-session decision has been made on this launch —
+    /// restore runs on the FIRST successful connect only, never on later
+    /// same-process reconnects/mode-switches (issue #18).
+    pub session_restored: AtomicBool,
+    /// Held while restore is rebuilding windows so a mid-restore `persist`
+    /// can't clobber the saved session with a half-built capture.
+    pub restoring: AtomicBool,
+    /// Single-flight guard for `session::persist` (skip overlapping captures;
+    /// the periodic tick catches anything dropped).
+    pub persist_busy: AtomicBool,
+    /// Serialized form of the last-saved session — persist writes only when the
+    /// captured session differs, so the periodic tick + event calls don't thrash
+    /// the store.
+    pub last_session: Mutex<String>,
     /// The ssh child process, if a tunnel is up.
     pub tunnel_child: Mutex<Option<Child>>,
     pub tunnel_status: Mutex<TunnelStatus>,
@@ -74,6 +98,11 @@ impl AppState {
             raw_titles: Mutex::new(HashMap::new()),
             ui_state: Mutex::new(HashMap::new()),
             strip: Mutex::new(HashMap::new()),
+            window_profiles: Mutex::new(HashMap::new()),
+            session_restored: AtomicBool::new(false),
+            restoring: AtomicBool::new(false),
+            persist_busy: AtomicBool::new(false),
+            last_session: Mutex::new(String::new()),
             tunnel_child: Mutex::new(None),
             tunnel_status: Mutex::new(TunnelStatus::Disconnected),
             stderr_tail: Mutex::new(Vec::new()),

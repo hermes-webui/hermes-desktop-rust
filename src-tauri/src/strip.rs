@@ -90,6 +90,22 @@ pub fn clear_partitions(app: &AppHandle) {
 /// Open a new strip window with its first tab. Runs on the caller's thread —
 /// callers must already be off the main thread (CLAUDE.md invariant #9).
 pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
+    if let Some(label) = build_strip_window(app, p, None) {
+        add_tab(app, &label);
+        log::info!("strip: window {label} ready");
+    }
+}
+
+/// Build a strip window (OS window + 38px shell webview + frame) WITHOUT any
+/// content tab, returning its label. Shared by `open_browser_window` (then adds
+/// one tab) and session restore (then adds the saved tabs). `frame_override`,
+/// when set, positions/sizes the window to a saved frame instead of the
+/// first-window-restore / cascade default. Caller must be off the main thread.
+fn build_strip_window(
+    app: &AppHandle,
+    p: &prefs::Prefs,
+    frame_override: Option<[i64; 4]>,
+) -> Option<String> {
     let state = app.state::<AppState>();
     let n = state.window_seq.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("main-{n}");
@@ -106,7 +122,7 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
         Ok(w) => w,
         Err(e) => {
             log::error!("strip: window build failed: {e}");
-            return;
+            return None;
         }
     };
 
@@ -141,8 +157,12 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
 
     log::info!("strip: window {label} built, strip webview added");
 
-    // Frame: first window restores persisted frame / centers, others cascade.
-    if is_first {
+    // Frame: a saved frame (restore) wins; else first window restores the
+    // persisted frame / centers, and others cascade off the host.
+    if let Some([x, y, w, h]) = frame_override.filter(|f| f[2] >= 200 && f[3] >= 200) {
+        let _ = win.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+        let _ = win.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    } else if is_first {
         if let Some((x, y, w, h)) = prefs::frame_load(app) {
             let _ = win.set_size(tauri::PhysicalSize::new(w, h));
             let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
@@ -179,9 +199,6 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
         }
     }
 
-    add_tab(app, &label);
-    log::info!("strip: window {label} ready");
-
     // Show fallback if the first page load never completes.
     {
         let w2 = win.clone();
@@ -192,9 +209,57 @@ pub fn open_browser_window(app: &AppHandle, p: &prefs::Prefs) {
             }
         });
     }
+    Some(label)
 }
 
-/// Add a tab to an existing strip window. Caller must be off the main thread.
+/// Recreate one saved strip window and its tabs (issue #18). Each tab reloads
+/// its saved URL and is re-seeded with its `hermes_profile` cookie so it
+/// reopens on the same profile. Caller must be off the main thread.
+pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
+    if sw.tabs.is_empty() {
+        return;
+    }
+    let p = prefs::load(app);
+    let Some(label) = build_strip_window(app, &p, sw.frame) else {
+        return;
+    };
+    for tab in &sw.tabs {
+        let url = match url::Url::parse(&tab.url) {
+            Ok(u) => u,
+            Err(_) => match url::Url::parse(&p.target_url) {
+                Ok(u) => u,
+                Err(_) => continue,
+            },
+        };
+        // Re-seed only the (non-sensitive) profile selector; fresh jar otherwise.
+        let seed: Vec<Cookie<'static>> = if cfg!(not(target_os = "macos")) {
+            tab.profile
+                .as_deref()
+                .map(|v| vec![crate::session::profile_cookie(v)])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        add_tab_with(app, &label, url, seed);
+    }
+    // Select the saved active tab.
+    let active_label = {
+        let state = app.state::<AppState>();
+        let strip = state.strip.lock().unwrap();
+        strip
+            .get(&label)
+            .and_then(|e| e.tabs.get(sw.active.min(e.tabs.len().saturating_sub(1))))
+            .map(|t| t.label.clone())
+    };
+    if let Some(al) = active_label {
+        select_tab(app, &label, &al);
+    }
+    log::info!("strip: restored window {label} with {} tab(s)", sw.tabs.len());
+}
+
+/// Add a tab to an existing strip window, seeded from the currently-active
+/// tab's cookie jar so it inherits the active profile + login (issue #3), then
+/// diverges. Caller must be off the main thread (CLAUDE.md invariant #9).
 pub fn add_tab(app: &AppHandle, window_label: &str) {
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
@@ -212,76 +277,25 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             return;
         }
     };
-    let allowed_host = target.host_str().map(|h| h.to_lowercase());
 
-    let state = app.state::<AppState>();
-    let (tab_label, opener_label) = {
-        let mut strip = state.strip.lock().unwrap();
-        let Some(entry) = strip.get_mut(window_label) else {
-            return;
-        };
-        // The currently-active tab is the opener we seed the new tab's cookies
-        // from (captured before the new tab is pushed and made active).
-        let opener = entry.tabs.get(entry.active).map(|t| t.label.clone());
-        entry.tab_seq += 1;
-        (
-            format!("tab-{}-{}", window_seq(window_label), entry.tab_seq),
-            opener,
-        )
-    };
-
-    let (r, g, b) = prefs::pre_paint_color(app);
-    let hex = crate::theme::hex_string(r, g, b);
-    // Paint the native webview surface in the cached theme color so a freshly
-    // added tab never flashes white before its first paint. The window-level
-    // anti-flash (build-hidden → reveal on load) can't help here: a new tab is
-    // a child webview of an already-visible window, so it shows immediately
-    // (issue #4). On Windows wry clamps any non-zero alpha to fully opaque,
-    // which is what we want.
-    let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let bg = Color(to8(r), to8(g), to8(b), 255);
-    // No injected ssh footer in strip mode — status lives in the strip.
-    let init = bridge::init_script(&tab_label, &hex, false);
-
-    // Per-tab cookie isolation (issue #3): the WebUI picks the active profile
-    // via an HttpOnly `hermes_profile` cookie, so a shared cookie jar makes the
-    // profile effectively global — switching profile in one tab bleeds into all
-    // the others. Give each tab its own data partition (separate jar), and seed
-    // it from the opener so a new tab still inherits the current profile + login
-    // (then diverges). Windows/Linux only: WKWebView has no data_directory, and
-    // macOS uses native tabs which this module doesn't drive.
-    let isolate = cfg!(not(target_os = "macos"));
-    let partition = if isolate {
-        tab_partition_dir(app, &tab_label)
-    } else {
-        None
-    };
-    if let Some(ref dir) = partition {
-        // Guarantee a FRESH jar at the point of use. Tab labels are
-        // deterministic and recur every run (window_seq resets to 0 at
-        // startup, so the first tab is always `tab-1-1`), while both the
-        // per-close removal and the startup `clear_partitions` wipe are
-        // best-effort — the OS can hold the WebView2 folder open. If both ever
-        // fail, a same-named tab would otherwise inherit a prior session's
-        // cookies (stale profile/login) instead of opening on the default.
-        // Removing here makes session-scoping hold regardless of cleanup.
-        let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::create_dir_all(dir);
-    }
-    // Read the opener's cookies BEFORE the new webview is created. Safe here:
-    // add_tab runs on a worker thread, so Tauri's cookie dispatcher marshals to
-    // the UI thread without the main-thread deadlock the docs warn about.
-    // (`hermes_profile` is HttpOnly, but the native cookie store API sees it.)
+    // Read the active tab's cookies BEFORE the new webview exists — the seed for
+    // the fresh jar. Safe on this worker thread: the cookie dispatcher marshals
+    // to the UI thread without the main-thread deadlock the docs warn about.
     //
-    // Use cookies() (whole store), NOT cookies_for_url(): the latter filters by
-    // URL, and on WKWebView that filter drops host-only cookies entirely — the
-    // WebUI sets `hermes_profile` host-only (no Domain attribute), which is the
-    // macOS inheritance bug (#3). Win/Linux match host-only cookies correctly,
-    // but a content tab only ever loads the one target origin, so its whole
-    // store IS the target's cookies — cookies() is the robust, uniform choice
-    // across all three platforms.
-    let seed: Vec<Cookie<'static>> = if partition.is_some() {
-        match opener_label
+    // cookies() (whole store), NOT cookies_for_url(): WKWebView's URL filter
+    // drops host-only cookies (the WebUI sets `hermes_profile` host-only) — the
+    // macOS inheritance bug (#3). A content tab only ever loads the one target
+    // origin, so its whole store IS that origin's cookies — uniform + robust.
+    let seed: Vec<Cookie<'static>> = if cfg!(not(target_os = "macos")) {
+        let opener = {
+            let state = app.state::<AppState>();
+            let strip = state.strip.lock().unwrap();
+            strip
+                .get(window_label)
+                .and_then(|e| e.tabs.get(e.active))
+                .map(|t| t.label.clone())
+        };
+        match opener
             .and_then(|lbl| find_webview(&win, &lbl))
             .or_else(|| focused_active_webview(app))
         {
@@ -289,24 +303,19 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
                 Ok(cookies) => {
                     let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
                     log::info!(
-                        "strip: seeding {tab_label} from opener — {} cookie(s): {:?}",
+                        "strip: seeding new tab in {window_label} from opener — {} cookie(s): {:?}",
                         cookies.len(),
                         names
                     );
                     cookies
                 }
-                // Fail open to the default profile (and re-login if auth) — log
-                // so the multi-profile smoke can tell a seed-read failure apart
-                // from a genuinely empty jar.
                 Err(e) => {
-                    log::warn!(
-                        "strip: seed read failed for {tab_label} (opens on default profile): {e}"
-                    );
+                    log::warn!("strip: seed read failed in {window_label} (opens on default profile): {e}");
                     Vec::new()
                 }
             },
             None => {
-                log::info!("strip: no opener for {tab_label} (opens on default profile)");
+                log::info!("strip: no opener in {window_label} (opens on default profile)");
                 Vec::new()
             }
         }
@@ -314,9 +323,64 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         Vec::new()
     };
 
-    // When isolating, load about:blank first so cookies can be seeded before
-    // the real navigation — otherwise the first request would race the seed and
-    // the tab would briefly load the wrong profile.
+    add_tab_with(app, window_label, target, seed);
+}
+
+/// Shared tab-creation body: build an isolated content webview for `target`,
+/// seeded with `seed` cookies, append it to `window_label`'s strip and make it
+/// active. Used by `add_tab` (seed = the opener's jar) and session restore
+/// (seed = the saved profile selector). Caller must be off the main thread.
+pub(crate) fn add_tab_with(
+    app: &AppHandle,
+    window_label: &str,
+    target: url::Url,
+    seed: Vec<Cookie<'static>>,
+) {
+    let Some(win) = app.windows().get(window_label).cloned() else {
+        return;
+    };
+    let allowed_host = target.host_str().map(|h| h.to_lowercase());
+    let state = app.state::<AppState>();
+    let tab_label = {
+        let mut strip = state.strip.lock().unwrap();
+        let Some(entry) = strip.get_mut(window_label) else {
+            return;
+        };
+        entry.tab_seq += 1;
+        format!("tab-{}-{}", window_seq(window_label), entry.tab_seq)
+    };
+
+    let (r, g, b) = prefs::pre_paint_color(app);
+    let hex = crate::theme::hex_string(r, g, b);
+    // Paint the native webview surface in the cached theme color so a freshly
+    // added tab never flashes white before its first paint (issue #4). On
+    // Windows wry clamps any non-zero alpha to fully opaque — what we want.
+    let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bg = Color(to8(r), to8(g), to8(b), 255);
+    // No injected ssh footer in strip mode — status lives in the strip.
+    let init = bridge::init_script(&tab_label, &hex, false);
+
+    // Per-tab cookie isolation (issue #3): each tab gets its own data partition
+    // (separate jar) so the WebUI's HttpOnly `hermes_profile` selector is scoped
+    // to the tab. macOS (HERMES_FORCE_STRIP) has no data_directory → no jar.
+    let partition = if cfg!(not(target_os = "macos")) {
+        tab_partition_dir(app, &tab_label)
+    } else {
+        None
+    };
+    if let Some(ref dir) = partition {
+        // Guarantee a FRESH jar at the point of use — best-effort cleanup
+        // elsewhere can leave a stale folder, and a recurring tab label would
+        // then inherit a prior session's cookies.
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // The profile this tab opens on (the seeded `hermes_profile` value, if any)
+    // — shown in the strip's profile dot immediately, before the first real
+    // page load re-reads it (issue #8).
+    let seed_profile = profile_from_cookies(&seed);
+
+    // about:blank first so the seed lands before the real navigation (no race).
     let initial_url = if partition.is_some() {
         WebviewUrl::External(url::Url::parse("about:blank").unwrap())
     } else {
@@ -335,8 +399,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             windows::navigation_allowed(&nav_app, url, allowed_host.as_deref())
         })
         // Native title source — replaces the JS EMIT('title') watcher, which
-        // silently no-ops in remote-origin tab webviews (issue #15). The
-        // webview's label IS the tab label.
+        // silently no-ops in remote-origin tab webviews (issue #15).
         .on_document_title_changed(|wv, title| {
             windows::apply_reported_title(wv.app_handle(), wv.label(), &title);
         })
@@ -360,6 +423,14 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
                     let _ = w.set_focus();
                 }
             }
+            // Re-read this tab's `hermes_profile` cookie after the real load
+            // (the server may have just set/changed it) and refresh the strip's
+            // profile dot (#8) + persist the session (#18). Off the wry callout:
+            // the cookie read marshals via the dispatcher (wry#583 deadlock).
+            let cap_app = app.clone();
+            let cap_win = load_window.clone();
+            let cap_tab = webview.label().to_string();
+            std::thread::spawn(move || capture_tab_profile(&cap_app, &cap_win, &cap_tab));
         });
 
     let (pos, size) = content_bounds(&win);
@@ -371,10 +442,9 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         }
     };
 
-    // Seed the isolated jar from the opener, then load the real target. The
-    // cookies are committed before the navigation request fires (WebKitGTK's
-    // set_cookie is synchronous; WebView2's AddOrUpdateCookie completes before
-    // navigate), so the first load already carries the inherited profile.
+    // Seed the isolated jar, then load the real target — cookies are committed
+    // before the navigation request fires (set_cookie is synchronous on
+    // WebKitGTK; WebView2's AddOrUpdateCookie completes before navigate).
     if partition.is_some() {
         for cookie in seed {
             let _ = webview.set_cookie(cookie);
@@ -398,6 +468,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             label: tab_label.clone(),
             title: "New Tab".into(),
             attention: false,
+            profile: seed_profile,
         });
         entry.active = entry.tabs.len() - 1;
     }
@@ -405,6 +476,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
     log::info!("strip: tab {tab_label} added to {window_label}");
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);
+    crate::session::persist(app);
 }
 
 pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
@@ -448,6 +520,7 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     }
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);
+    crate::session::persist(app);
 }
 
 pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
@@ -489,6 +562,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         select_tab(app, window_label, &next);
     }
     log::info!("strip: closed {tab_label}, {remaining} tabs remain in {window_label}");
+    crate::session::persist(app);
 }
 
 pub fn close_tab_by_label(app: &AppHandle, tab_label: &str) {
@@ -545,6 +619,47 @@ pub fn all_tab_webviews(app: &AppHandle) -> Vec<Webview<Wry>> {
         .flat_map(|w| w.webviews())
         .filter(|wv| wv.label().starts_with("tab-"))
         .collect()
+}
+
+/// Capture every strip window as a session window (issue #18). Each tab's live
+/// URL is read from its webview; order/active/profile come from the registry.
+/// Must run on the main thread (the webview URL getter touches the runtime).
+pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
+    use crate::session::{SessionTab, SessionWindow};
+    let p = prefs::load(app);
+    let state = app.state::<AppState>();
+    let mut out = Vec::new();
+    for win in windows::content_window_handles(app) {
+        let label = win.label().to_string();
+        let (tabs_meta, active) = {
+            let strip = state.strip.lock().unwrap();
+            match strip.get(&label) {
+                Some(e) => (e.tabs.clone(), e.active),
+                None => continue,
+            }
+        };
+        let tabs: Vec<SessionTab> = tabs_meta
+            .iter()
+            .map(|t| {
+                let url = find_webview(&win, &t.label)
+                    .and_then(|wv| crate::session::capture_url(|| wv.url()))
+                    .unwrap_or_else(|| p.target_url.clone());
+                SessionTab {
+                    url,
+                    profile: t.profile.clone(),
+                }
+            })
+            .collect();
+        if tabs.is_empty() {
+            continue;
+        }
+        out.push(SessionWindow {
+            frame: crate::session::frame_of(&win),
+            active: active.min(tabs.len() - 1),
+            tabs,
+        });
+    }
+    out
 }
 
 /// Recompute strip + active tab bounds (window Resized handler).
@@ -615,6 +730,89 @@ pub fn set_tab_title(app: &AppHandle, tab_label: &str, title: &str, attention: b
     }
     emit_tabs(app, &window_label);
     refresh_window_title(app, &window_label);
+}
+
+/// Extract the `hermes_profile` cookie value from a cookie set. `None` means
+/// the default profile (the WebUI sets no such cookie for it).
+pub fn profile_from_cookies(cookies: &[Cookie<'static>]) -> Option<String> {
+    cookies
+        .iter()
+        .find(|c| c.name() == "hermes_profile")
+        .map(|c| c.value().to_string())
+}
+
+/// Read a tab's current profile from its isolated cookie jar; if it changed,
+/// update the registry, repaint the strip (profile dot — #8), and persist the
+/// session (#18). Runs on a worker thread — the cookie read marshals via the
+/// dispatcher, so it must not be called from inside a wry callout (wry#583).
+fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
+    let Some(win) = app.windows().get(window_label).cloned() else {
+        return;
+    };
+    let Some(wv) = find_webview(&win, tab_label) else {
+        return;
+    };
+    let profile = match wv.cookies() {
+        Ok(cs) => profile_from_cookies(&cs),
+        Err(e) => {
+            log::debug!("strip: profile read failed for {tab_label}: {e}");
+            return;
+        }
+    };
+    let changed = {
+        let state = app.state::<AppState>();
+        let mut strip = state.strip.lock().unwrap();
+        match strip
+            .get_mut(window_label)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.label == tab_label))
+        {
+            Some(tab) if tab.profile != profile => {
+                tab.profile = profile;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        emit_tabs(app, window_label);
+        crate::session::persist(app);
+    }
+}
+
+/// Move a tab to a new index within its window's strip (drag-to-reorder, #19).
+/// The visible webview is unchanged — only the display order and the stored
+/// `Vec` order move; `active` keeps pointing at the same tab label.
+pub fn reorder_tab(app: &AppHandle, window_label: &str, tab_label: &str, new_index: usize) {
+    let state = app.state::<AppState>();
+    let moved = {
+        let mut strip = state.strip.lock().unwrap();
+        let Some(entry) = strip.get_mut(window_label) else {
+            return;
+        };
+        if entry.tabs.is_empty() {
+            return;
+        }
+        let Some(from) = entry.tabs.iter().position(|t| t.label == tab_label) else {
+            return;
+        };
+        let to = new_index.min(entry.tabs.len() - 1);
+        if from == to {
+            return;
+        }
+        let active_label = entry.tabs.get(entry.active).map(|t| t.label.clone());
+        let tab = entry.tabs.remove(from);
+        entry.tabs.insert(to, tab);
+        if let Some(al) = active_label {
+            if let Some(idx) = entry.tabs.iter().position(|t| t.label == al) {
+                entry.active = idx;
+            }
+        }
+        true
+    };
+    if moved {
+        emit_tabs(app, window_label);
+        crate::session::persist(app);
+    }
 }
 
 fn refresh_window_title(app: &AppHandle, window_label: &str) {

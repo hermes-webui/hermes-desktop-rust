@@ -3,7 +3,7 @@
 //! | error window. Single-flight guarded.
 
 use crate::state::AppState;
-use crate::{health, prefs, tunnel, windows};
+use crate::{health, prefs, session, tunnel, windows};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -143,7 +143,8 @@ fn run(app: &AppHandle) {
             if let Some(last) = content.last() {
                 let _ = last.set_focus();
             }
-        } else {
+        } else if !session::maybe_restore(app) {
+            // First connect with no replayable session → one fresh window.
             windows::open_browser(app, &p, false);
         }
         windows::set_offline_badge(app, false);

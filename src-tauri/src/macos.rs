@@ -18,7 +18,7 @@ use objc2::ClassType;
 use objc2_app_kit::{NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
 use objc2_foundation::{CGPoint, CGRect, CGSize};
 use std::ffi::c_void;
-use tauri::WebviewWindow;
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 // ---- GCD main-queue dispatch ----
 //
@@ -142,6 +142,111 @@ pub fn update_webview_layout(window: &WebviewWindow) -> bool {
             }
         }
         tab_visible
+    }
+}
+
+/// Capture macOS content windows as session windows (issue #18). Native tab
+/// grouping is the source of truth (we get no KVO for user-driven
+/// drag-out/merge/reorder), so this queries each window's `NSWindowTabGroup`:
+/// windows in the same group become one session window, in the group's order,
+/// with the selected tab marked active. Per-tab profile comes from the
+/// `window_profiles` map (captured at page load); the URL from the live
+/// webview. MUST run on the main thread (AppKit + webview getters).
+pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
+    use crate::session::{SessionTab, SessionWindow};
+    use std::collections::{HashMap, HashSet};
+
+    let wins = crate::windows::content_windows(app);
+    let target = crate::prefs::load(app).target_url;
+    let profiles = {
+        let state = app.state::<crate::state::AppState>();
+        let g = state.window_profiles.lock().unwrap();
+        g.clone()
+    };
+    // ns_window pointer -> WebviewWindow
+    let mut by_ptr: HashMap<usize, WebviewWindow> = HashMap::new();
+    for w in &wins {
+        if let Ok(ptr) = w.ns_window() {
+            by_ptr.insert(ptr as usize, w.clone());
+        }
+    }
+
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut out = Vec::new();
+    for w in &wins {
+        let Ok(self_ptr) = w.ns_window() else {
+            continue;
+        };
+        if seen.contains(&(self_ptr as usize)) {
+            continue;
+        }
+        let (mut ordered, selected) = tab_group_ptrs(w);
+        if ordered.is_empty() {
+            ordered.push(self_ptr as usize); // standalone window = a group of one
+        }
+        let mut tabs = Vec::new();
+        let mut active = 0usize;
+        for (i, ptr) in ordered.iter().enumerate() {
+            seen.insert(*ptr);
+            let Some(member) = by_ptr.get(ptr) else {
+                continue;
+            };
+            let url = crate::session::capture_url(|| member.url()).unwrap_or_else(|| target.clone());
+            if Some(i) == selected {
+                active = tabs.len();
+            }
+            tabs.push(SessionTab {
+                url,
+                profile: profiles.get(member.label()).cloned(),
+            });
+        }
+        if tabs.is_empty() {
+            continue;
+        }
+        // The group shares one frame — read it off the queried window.
+        let frame = if w.is_minimized().unwrap_or(false) || w.is_fullscreen().unwrap_or(false) {
+            None
+        } else if let (Ok(pos), Ok(sz)) = (w.outer_position(), w.inner_size()) {
+            if sz.width >= 200 && sz.height >= 200 {
+                Some([pos.x as i64, pos.y as i64, sz.width as i64, sz.height as i64])
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        out.push(SessionWindow {
+            frame,
+            active: active.min(tabs.len() - 1),
+            tabs,
+        });
+    }
+    out
+}
+
+/// Ordered ns_window pointers of `window`'s native tab group + the selected
+/// index within that order. Empty vec when the window is in no tab group.
+fn tab_group_ptrs(window: &WebviewWindow) -> (Vec<usize>, Option<usize>) {
+    let Ok(ptr) = window.ns_window() else {
+        return (Vec::new(), None);
+    };
+    unsafe {
+        let ns: &NSWindow = &*(ptr as *const NSWindow);
+        let Some(group) = ns.tabGroup() else {
+            return (Vec::new(), None);
+        };
+        let arr = group.windows();
+        let count = arr.count();
+        let mut ptrs = Vec::with_capacity(count);
+        for i in 0..count {
+            let w = arr.objectAtIndex(i);
+            ptrs.push(&*w as *const NSWindow as usize);
+        }
+        let sel_idx = group.selectedWindow().and_then(|sel| {
+            let sp = &*sel as *const NSWindow as usize;
+            ptrs.iter().position(|p| *p == sp)
+        });
+        (ptrs, sel_idx)
     }
 }
 

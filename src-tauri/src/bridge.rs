@@ -59,13 +59,32 @@ const PASTE_SUPPRESS: &str = r##"
 
 /// S7/S8/S9 — macOS overlay-titlebar integration: traffic-light clearance,
 /// hide the page logo (collides with traffic lights), CSS rule for hiding the
-/// page titlebar when the native tab bar shows, drag region on .app-titlebar.
+/// page titlebar when the native tab bar shows, and a NATIVE drag region on
+/// `.app-titlebar`.
+///
+/// Window dragging uses WKWebView's built-in `-webkit-app-region: drag` (the
+/// same mechanism AppKit/Electron use for frameless drag) rather than Tauri's
+/// `data-tauri-drag-region`. The Tauri attribute drives dragging through a
+/// JS→native IPC that is unreliable in remote-origin webviews — the same
+/// remote-IPC fragility that broke titles (#15) and external links (#12) — so
+/// with a single tab (no native tab bar to drag) the window couldn't be moved
+/// at all (issue #22). `-webkit-app-region` is honored natively by WKWebView,
+/// independent of IPC/CSP/capability scope, and works regardless of tab count.
+/// Interactive children are marked `no-drag` so the titlebar's buttons/inputs
+/// still receive clicks. The `data-tauri-drag-region` attribute is kept as a
+/// belt-and-suspenders fallback (harmless when the CSS already handles it).
 const MACOS_TITLEBAR: &str = r##"
   try { document.documentElement.style.setProperty('--traffic-light-width', '80px'); } catch (e) {}
   (function () {
     try {
       var s = document.createElement('style');
-      s.textContent = '.app-titlebar-icon { visibility: hidden !important; } body.hermes-mac-tabbed .app-titlebar { display: none !important; }';
+      s.textContent =
+        '.app-titlebar-icon { visibility: hidden !important; } ' +
+        'body.hermes-mac-tabbed .app-titlebar { display: none !important; } ' +
+        '.app-titlebar { -webkit-app-region: drag; } ' +
+        '.app-titlebar button, .app-titlebar a, .app-titlebar input, .app-titlebar select, ' +
+        '.app-titlebar textarea, .app-titlebar [role="button"], .app-titlebar [contenteditable], ' +
+        '.app-titlebar [data-no-drag] { -webkit-app-region: no-drag; }';
       (document.head || document.documentElement).appendChild(s);
     } catch (e) {}
   })();
