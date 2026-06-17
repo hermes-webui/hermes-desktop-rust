@@ -72,6 +72,26 @@
       .tab.attention:not(.active) {
         background: rgba(255, 159, 10, 0.12);
       }
+      /* Per-tab profile dot (issue #8): a colored dot keyed to the tab's active
+         WebUI profile, so multiple profiles open at once are tellable apart.
+         Hidden for the default profile (no dot = default). */
+      .tab .pf {
+        flex: none;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+      }
+      /* Drag-to-reorder (issue #19) */
+      .tab.dragging {
+        opacity: 0.45;
+      }
+      .tab.drop-before {
+        box-shadow: inset 2px 0 0 0 var(--hermes-accent, #0a84ff);
+      }
+      .tab.drop-after {
+        box-shadow: inset -2px 0 0 0 var(--hermes-accent, #0a84ff);
+      }
       .tab .x {
         flex: none;
         width: 18px;
@@ -152,6 +172,22 @@
       let boot = { mode: "direct", target: "" };
       let tunnel = null; // {state, host, port}
       let healthy = true;
+      let dragFrom = -1; // index of the tab being dragged (#19)
+      let dragLabel = ""; // label of the tab being dragged
+
+      // Stable-ish color for a profile name → its dot (issue #8). The default
+      // profile (no cookie) gets no dot.
+      function profileColor(name) {
+        let h = 0;
+        for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+        return "hsl(" + (h % 360) + ", 62%, 55%)";
+      }
+
+      function clearDropMarks() {
+        document
+          .querySelectorAll(".tab.drop-before, .tab.drop-after")
+          .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+      }
 
       function renderTabs(snapshot) {
         if (snapshot.window !== WIN) return;
@@ -163,14 +199,24 @@
             "tab" +
             (i === snapshot.active ? " active" : "") +
             (tab.attention ? " attention" : "");
-          el.title = tab.attention
-            ? (tab.title || "New Tab") + " — waiting for you"
-            : tab.title;
+          el.draggable = true;
+          el.dataset.index = i;
+          const profLabel = tab.profile ? " · profile: " + tab.profile : "";
+          el.title =
+            (tab.attention
+              ? (tab.title || "New Tab") + " — waiting for you"
+              : tab.title || "New Tab") + profLabel;
           if (tab.attention) {
             const dot = document.createElement("span");
             dot.className = "attn";
             dot.setAttribute("aria-label", "waiting for you");
             el.appendChild(dot);
+          } else if (tab.profile) {
+            const pf = document.createElement("span");
+            pf.className = "pf";
+            pf.style.background = profileColor(tab.profile);
+            pf.setAttribute("aria-label", "profile: " + tab.profile);
+            el.appendChild(pf);
           }
           const t = document.createElement("span");
           t.className = "t";
@@ -191,6 +237,43 @@
           el.addEventListener("auxclick", (e) => {
             if (e.button === 1)
               hermes.invoke("tab_close", { window: WIN, tab: tab.label });
+          });
+
+          // Drag-to-reorder (issue #19).
+          el.addEventListener("dragstart", (e) => {
+            dragFrom = i;
+            dragLabel = tab.label;
+            el.classList.add("dragging");
+            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          });
+          el.addEventListener("dragend", () => {
+            dragFrom = -1;
+            el.classList.remove("dragging");
+            clearDropMarks();
+          });
+          el.addEventListener("dragover", (e) => {
+            if (dragFrom < 0 || dragFrom === i) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            const r = el.getBoundingClientRect();
+            const after = e.clientX > r.left + r.width / 2;
+            el.classList.toggle("drop-after", after);
+            el.classList.toggle("drop-before", !after);
+          });
+          el.addEventListener("dragleave", () =>
+            el.classList.remove("drop-before", "drop-after")
+          );
+          el.addEventListener("drop", (e) => {
+            if (dragFrom < 0 || dragFrom === i) return;
+            e.preventDefault();
+            const r = el.getBoundingClientRect();
+            const after = e.clientX > r.left + r.width / 2;
+            let to = after ? i + 1 : i;
+            if (dragFrom < to) to -= 1; // removal shifts indices left
+            const moved = dragLabel; // the DRAGGED tab, not this drop target
+            clearDropMarks();
+            if (to !== dragFrom && moved)
+              hermes.invoke("tab_reorder", { window: WIN, tab: moved, index: to });
           });
           root.appendChild(el);
         });

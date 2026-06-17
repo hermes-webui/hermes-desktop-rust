@@ -151,6 +151,8 @@ pub fn forget(app: &AppHandle, label: &str) {
     let state = app.state::<AppState>();
     state.window_modes.lock().unwrap().remove(label);
     state.raw_titles.lock().unwrap().remove(label);
+    state.window_profiles.lock().unwrap().remove(label);
+    crate::session::forget_navigated(app, label);
 }
 
 /// Open a new browser window (a "tab" on macOS when as_tab and a window
@@ -234,6 +236,8 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
             let Some(win) = app.get_webview_window(&load_label) else {
                 return;
             };
+            // Non-nil URL now — capture may read it (#18 crash guard).
+            crate::session::mark_navigated(&app, &load_label);
             // Persisted zoom re-applies on every load (Swift didFinish parity).
             let zoom = prefs::zoom_get(&app);
             if (zoom - 1.0).abs() > f64::EPSILON {
@@ -255,6 +259,11 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
                 .unwrap()
                 .remove(win.label());
             refresh_macos_chrome(&app);
+            // Capture this window's active profile (#8 carrier for #18 restore)
+            // + persist the session. macOS-only; the cookie read is GCD-deferred
+            // inside the helper (invariant #12).
+            #[cfg(target_os = "macos")]
+            capture_window_profile(&app, win.label());
         });
 
     #[cfg(target_os = "macos")]
@@ -410,6 +419,204 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
             });
         }
     }
+
+    set_offline_badge(app, false);
+    refresh_macos_chrome(app);
+    Some(win)
+}
+
+/// macOS: read this content window's `hermes_profile` cookie and record it in
+/// `window_profiles` (the per-window profile that feeds session capture, #8/#18)
+/// then persist. The cookie read pumps the run loop, so it's GCD-deferred to
+/// run between tao callouts (invariant #12) — never inside a page-load callout.
+#[cfg(target_os = "macos")]
+pub fn capture_window_profile(app: &AppHandle, label: &str) {
+    let Some(win) = app.get_webview_window(label) else {
+        return;
+    };
+    let app = app.clone();
+    let label = label.to_string();
+    crate::macos::run_on_main_async(move || {
+        let profile = win.cookies().ok().and_then(|cs| {
+            cs.into_iter()
+                .find(|c| c.name() == "hermes_profile")
+                .map(|c| c.value().to_string())
+        });
+        {
+            let state = app.state::<AppState>();
+            let mut map = state.window_profiles.lock().unwrap();
+            match profile {
+                Some(v) => {
+                    map.insert(label.clone(), v);
+                }
+                None => {
+                    map.remove(&label);
+                }
+            }
+        }
+        crate::session::persist(&app);
+    });
+}
+
+/// Recreate one saved macOS window-group as native tabs (issue #18). The first
+/// tab is a standalone window; each subsequent tab joins its native tab group
+/// via the freeze-safe `add_tabbed_window` path (invariant #12). Every restored
+/// tab is incognito and re-seeded with its saved `hermes_profile` selector, so
+/// distinct profiles stay isolated and each reopens on the right one (auth
+/// logins are not persisted — an authed server re-prompts). The saved active
+/// tab is focused last. Runs on the orchestrator worker thread.
+#[cfg(target_os = "macos")]
+pub fn restore_macos_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
+    let p = prefs::load(app);
+    let mut group_host: Option<WebviewWindow> = None;
+    let mut built: Vec<WebviewWindow> = Vec::new();
+    for (i, tab) in sw.tabs.iter().enumerate() {
+        let url = match url::Url::parse(&tab.url).or_else(|_| url::Url::parse(&p.target_url)) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        let frame = if i == 0 { sw.frame } else { None };
+        if let Some(win) =
+            build_restored_macos_tab(app, &p, url, tab.profile.clone(), group_host.clone(), frame)
+        {
+            if group_host.is_none() {
+                group_host = Some(win.clone());
+            }
+            built.push(win);
+        }
+    }
+    // Focus the saved active tab once the group has formed (GCD is FIFO, so this
+    // runs after the queued addTabbedWindow blocks).
+    if let Some(active) = built.get(sw.active).or_else(|| built.last()).cloned() {
+        crate::macos::run_on_main_async(move || {
+            let _ = active.set_focus();
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_restored_macos_tab(
+    app: &AppHandle,
+    p: &prefs::Prefs,
+    target: url::Url,
+    profile: Option<String>,
+    host: Option<WebviewWindow>,
+    frame: Option<[i64; 4]>,
+) -> Option<WebviewWindow> {
+    use tauri::TitleBarStyle;
+    let state = app.state::<AppState>();
+    let n = state.window_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let label = format!("main-{n}");
+    let allowed_host = target.host_str().map(|h| h.to_lowercase());
+    let (r, g, b) = prefs::pre_paint_color(app);
+    let hex = theme::hex_string(r, g, b);
+    let init = bridge::init_script(&label, &hex, p.connection_mode == "ssh");
+
+    let nav_app = app.clone();
+    let load_label = label.clone();
+    let load_mode = p.connection_mode.clone();
+    let load_host = p.ssh_host.clone();
+    let load_port = p.local_port.clone();
+    let seed_target = target.clone();
+
+    let blank = url::Url::parse("about:blank").unwrap();
+    let win = match WebviewWindowBuilder::new(app, &label, WebviewUrl::External(blank))
+        .title("Hermes WebUI")
+        .inner_size(1280.0, 830.0)
+        .theme(Some(cached_theme(app)))
+        .visible(false)
+        .initialization_script(&init)
+        .on_navigation(move |url| navigation_allowed(&nav_app, url, allowed_host.as_deref()))
+        .on_document_title_changed(|win, title| {
+            apply_reported_title(win.app_handle(), win.label(), &title);
+        })
+        .on_page_load(move |webview, payload| {
+            if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                return;
+            }
+            if payload.url().scheme() == "about" {
+                return;
+            }
+            let app = webview.app_handle().clone();
+            let Some(win) = app.get_webview_window(&load_label) else {
+                return;
+            };
+            // Non-nil URL now — capture may read it (#18 crash guard).
+            crate::session::mark_navigated(&app, &load_label);
+            let zoom = prefs::zoom_get(&app);
+            if (zoom - 1.0).abs() > f64::EPSILON {
+                let _ = win.set_zoom(zoom);
+            }
+            if !win.is_visible().unwrap_or(true) {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            if load_mode == "ssh" {
+                let status = *app.state::<AppState>().tunnel_status.lock().unwrap();
+                push_tunnel_status(&app, &win, status, &load_host, &load_port);
+            }
+            app.state::<AppState>()
+                .ui_state
+                .lock()
+                .unwrap()
+                .remove(win.label());
+            refresh_macos_chrome(&app);
+            capture_window_profile(&app, win.label());
+        })
+        .title_bar_style(TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .tabbing_identifier(TABBING_ID)
+        .incognito(true)
+        .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            log::error!("restore: window build failed: {e}");
+            return None;
+        }
+    };
+
+    state
+        .window_modes
+        .lock()
+        .unwrap()
+        .insert(label.clone(), p.connection_mode.clone());
+
+    if let Some([x, y, w, h]) = frame.filter(|f| f[2] >= 200 && f[3] >= 200) {
+        let _ = win.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+        let _ = win.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    }
+
+    // Subsequent tabs join the group (GCD-deferred — invariant #12).
+    if let Some(host) = &host {
+        crate::macos::add_tabbed_window(host, &win);
+    }
+
+    // Show fallback if the page never finishes loading.
+    {
+        let w2 = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            if !w2.is_visible().unwrap_or(true) {
+                let _ = w2.show();
+            }
+        });
+    }
+
+    // Seed the profile selector into the (incognito) jar, then navigate to the
+    // saved URL — GCD-deferred so the cookie write's run-loop pump runs outside
+    // tao callouts (invariant #12), after the addTabbedWindow block (FIFO).
+    let new_win = win.clone();
+    crate::macos::run_on_main_async(move || {
+        if let Some(v) = profile {
+            if let Err(e) = new_win.set_cookie(crate::session::profile_cookie(&v)) {
+                log::warn!("restore: set_cookie failed for {}: {e}", new_win.label());
+            }
+        }
+        if let Err(e) = new_win.navigate(seed_target) {
+            log::error!("restore: navigate failed for {}: {e}", new_win.label());
+        }
+    });
 
     set_offline_badge(app, false);
     refresh_macos_chrome(app);

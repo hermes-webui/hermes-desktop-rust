@@ -1,5 +1,49 @@
 # Changelog
 
+## [v0.4.0] — 2026-06-17
+
+A tabs & sessions release across macOS, Windows, and Linux.
+
+### Added
+
+- **Your windows and tabs come back after you quit or update the app**
+  (issue #18). The shell now remembers each window's tabs — their order, which
+  one was active, each tab's URL, and each tab's profile — and restores them on
+  the next launch (including after an in-app update relaunches). Previously
+  every restart reopened a single empty tab and the rest were lost. Works on all
+  three platforms: macOS rebuilds the native window tab groups; Windows/Linux
+  rebuild the tab strip. Each restored tab reopens on the profile it was on (the
+  profile selector is re-seeded). Notes: a server that requires login will ask
+  you to sign in again after a restart (only the profile selector is persisted,
+  never login/auth cookies); the session is saved for the server you're
+  connected to and isn't restored if you switch to a different server.
+- **Per-tab profile dot** (issue #8, Windows/Linux tab strip). Each tab shows a
+  small colored dot keyed to its active profile, so several profiles open at
+  once are easy to tell apart at a glance; the default profile shows no dot.
+  Hovering a tab shows its profile name. Pairs with the per-tab profile
+  isolation added in v0.3.7/v0.3.8.
+- **Drag tabs left/right to reorder them** in the Windows/Linux tab strip
+  (issue #19). macOS already reorders via native window tabs; the custom strip
+  had no way to. The new order is what gets saved and restored.
+
+### Fixed
+
+- **macOS: you couldn't drag the window by the title bar when only one tab was
+  open** (issue #22). Window dragging relied on Tauri's JS-based drag region,
+  which doesn't work reliably in the remote-content webview — so with a single
+  tab (no native tab bar to grab) the window wouldn't move. Dragging now uses
+  WebKit's built-in native drag region (`-webkit-app-region`), which is
+  independent of that fragile IPC and works regardless of how many tabs are
+  open. (Same remote-webview limitation behind the earlier title (#15) and
+  external-link (#12) fixes.)
+
+### Known issues
+
+- The app icon still shows a faint light edge on its rounded corners (issue #5)
+  — the icon artwork has a light border baked in, so a clean fix needs the
+  source logo and a proper icon pass rather than editing the rendered images.
+  Tracked for a follow-up.
+
 ## [v0.3.8] — 2026-06-16
 
 ### Fixed

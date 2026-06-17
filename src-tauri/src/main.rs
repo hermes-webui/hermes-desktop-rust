@@ -8,6 +8,7 @@ mod macos;
 mod menu;
 mod paste;
 mod prefs;
+mod session;
 mod state;
 mod strip;
 mod theme;
@@ -82,6 +83,11 @@ fn tab_select(app: tauri::AppHandle, window: String, tab: String) {
 #[tauri::command]
 fn tab_close(app: tauri::AppHandle, window: String, tab: String) {
     std::thread::spawn(move || strip::close_tab(&app, &window, &tab));
+}
+
+#[tauri::command]
+fn tab_reorder(app: tauri::AppHandle, window: String, tab: String, index: usize) {
+    std::thread::spawn(move || strip::reorder_tab(&app, &window, &tab, index));
 }
 
 #[tauri::command]
@@ -176,6 +182,7 @@ fn main() {
             tab_new,
             tab_select,
             tab_close,
+            tab_reorder,
             new_window_cmd,
             strip_menu
         ])
@@ -240,6 +247,17 @@ fn main() {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(10));
                     updater::spawn_check(&update_handle, false);
+                });
+            }
+            // Session autosave (issue #18): periodically capture windows/tabs so
+            // a frame move or an SPA navigation (neither of which fires a
+            // structural event) is reflected. Cheap — `persist` writes only when
+            // the captured session differs from the last write.
+            {
+                let sess_handle = handle.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    session::persist(&sess_handle);
                 });
             }
             // Chrome poller — the Tauri stand-in for the Swift app's
