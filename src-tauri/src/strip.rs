@@ -254,7 +254,10 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
     if let Some(al) = active_label {
         select_tab(app, &label, &al);
     }
-    log::info!("strip: restored window {label} with {} tab(s)", sw.tabs.len());
+    log::info!(
+        "strip: restored window {label} with {} tab(s)",
+        sw.tabs.len()
+    );
 }
 
 /// Add a tab to an existing strip window, seeded from the currently-active
@@ -299,21 +302,23 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             .and_then(|lbl| find_webview(&win, &lbl))
             .or_else(|| focused_active_webview(app))
         {
-            Some(opener) => match opener.cookies() {
-                Ok(cookies) => {
-                    let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
-                    log::info!(
+            Some(opener) => {
+                match opener.cookies() {
+                    Ok(cookies) => {
+                        let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
+                        log::info!(
                         "strip: seeding new tab in {window_label} from opener — {} cookie(s): {:?}",
                         cookies.len(),
                         names
                     );
-                    cookies
+                        cookies
+                    }
+                    Err(e) => {
+                        log::warn!("strip: seed read failed in {window_label} (opens on default profile): {e}");
+                        Vec::new()
+                    }
                 }
-                Err(e) => {
-                    log::warn!("strip: seed read failed in {window_label} (opens on default profile): {e}");
-                    Vec::new()
-                }
-            },
+            }
             None => {
                 log::info!("strip: no opener in {window_label} (opens on default profile)");
                 Vec::new()
@@ -412,6 +417,9 @@ pub(crate) fn add_tab_with(
                 return;
             }
             let app = webview.app_handle().clone();
+            // This tab has a non-nil URL now — capture may read it (#18 crash
+            // guard: never call url() on a not-yet-navigated webview).
+            crate::session::mark_navigated(&app, webview.label());
             let zoom = prefs::zoom_get(&app);
             if (zoom - 1.0).abs() > f64::EPSILON {
                 let _ = webview.set_zoom(zoom);
@@ -554,6 +562,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         )
     };
     state.raw_titles.lock().unwrap().remove(tab_label);
+    crate::session::forget_navigated(app, tab_label);
     if let Some(wv) = find_webview(&win, tab_label) {
         let _ = wv.close();
     }
@@ -641,9 +650,16 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
         let tabs: Vec<SessionTab> = tabs_meta
             .iter()
             .map(|t| {
-                let url = find_webview(&win, &t.label)
-                    .and_then(|wv| crate::session::capture_url(|| wv.url()))
-                    .unwrap_or_else(|| p.target_url.clone());
+                // Only read the live URL once the tab has committed a real
+                // navigation — url() on a not-yet-navigated webview panics on
+                // macOS (and poisons a runtime mutex). Otherwise fall back.
+                let url = if crate::session::has_navigated(app, &t.label) {
+                    find_webview(&win, &t.label)
+                        .and_then(|wv| crate::session::capture_url(|| wv.url()))
+                } else {
+                    None
+                }
+                .unwrap_or_else(|| p.target_url.clone());
                 SessionTab {
                     url,
                     profile: t.profile.clone(),
@@ -882,6 +898,7 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
         }
         for tab in &entry.tabs {
             remove_tab_partition(app, &tab.label);
+            crate::session::forget_navigated(app, &tab.label);
         }
     }
 }

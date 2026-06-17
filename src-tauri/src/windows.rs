@@ -151,6 +151,8 @@ pub fn forget(app: &AppHandle, label: &str) {
     let state = app.state::<AppState>();
     state.window_modes.lock().unwrap().remove(label);
     state.raw_titles.lock().unwrap().remove(label);
+    state.window_profiles.lock().unwrap().remove(label);
+    crate::session::forget_navigated(app, label);
 }
 
 /// Open a new browser window (a "tab" on macOS when as_tab and a window
@@ -234,6 +236,8 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
             let Some(win) = app.get_webview_window(&load_label) else {
                 return;
             };
+            // Non-nil URL now — capture may read it (#18 crash guard).
+            crate::session::mark_navigated(&app, &load_label);
             // Persisted zoom re-applies on every load (Swift didFinish parity).
             let zoom = prefs::zoom_get(&app);
             if (zoom - 1.0).abs() > f64::EPSILON {
@@ -537,6 +541,8 @@ fn build_restored_macos_tab(
             let Some(win) = app.get_webview_window(&load_label) else {
                 return;
             };
+            // Non-nil URL now — capture may read it (#18 crash guard).
+            crate::session::mark_navigated(&app, &load_label);
             let zoom = prefs::zoom_get(&app);
             if (zoom - 1.0).abs() > f64::EPSILON {
                 let _ = win.set_zoom(zoom);

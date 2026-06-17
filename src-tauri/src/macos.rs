@@ -191,7 +191,15 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
             let Some(member) = by_ptr.get(ptr) else {
                 continue;
             };
-            let url = crate::session::capture_url(|| member.url()).unwrap_or_else(|| target.clone());
+            // Only read the live URL once the window has committed a real
+            // navigation — url() on a not-yet-navigated WKWebView unwraps a nil
+            // NSURL and panics (poisoning a runtime mutex → SIGABRT).
+            let url = if crate::session::has_navigated(app, member.label()) {
+                crate::session::capture_url(|| member.url())
+            } else {
+                None
+            }
+            .unwrap_or_else(|| target.clone());
             if Some(i) == selected {
                 active = tabs.len();
             }
@@ -208,7 +216,12 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
             None
         } else if let (Ok(pos), Ok(sz)) = (w.outer_position(), w.inner_size()) {
             if sz.width >= 200 && sz.height >= 200 {
-                Some([pos.x as i64, pos.y as i64, sz.width as i64, sz.height as i64])
+                Some([
+                    pos.x as i64,
+                    pos.y as i64,
+                    sz.width as i64,
+                    sz.height as i64,
+                ])
             } else {
                 None
             }

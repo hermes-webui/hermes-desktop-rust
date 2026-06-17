@@ -200,11 +200,46 @@ pub fn maybe_restore(app: &AppHandle) -> bool {
         }
     }
     state.restoring.store(false, Ordering::SeqCst);
+    // Guard against a total restore failure leaving the app with zero windows
+    // (on Win/Linux a later Destroyed event could then quit the app). If
+    // nothing was built, fall through so the caller opens one bare window.
+    if crate::windows::content_window_handles(app).is_empty() {
+        log::warn!("session: restore produced no windows — opening a fresh one");
+        return false;
+    }
     // Deliberately DON'T persist here: the restored tabs haven't navigated yet
     // (the seed+navigate is deferred), so a capture now would read about:blank
     // and clobber the saved URLs. `last_session` is already seeded with the
     // saved blob; the periodic autosave re-captures once the tabs have loaded.
     true
+}
+
+/// Record that a webview/window has committed at least one real navigation, so
+/// session capture may safely read its live URL (see `AppState.navigated`).
+pub fn mark_navigated(app: &AppHandle, label: &str) {
+    app.state::<AppState>()
+        .navigated
+        .lock()
+        .unwrap()
+        .insert(label.to_string());
+}
+
+/// Whether `label` has committed a real navigation (URL is non-nil).
+pub fn has_navigated(app: &AppHandle, label: &str) -> bool {
+    app.state::<AppState>()
+        .navigated
+        .lock()
+        .unwrap()
+        .contains(label)
+}
+
+/// Drop a closed webview/window from the navigated set.
+pub fn forget_navigated(app: &AppHandle, label: &str) {
+    app.state::<AppState>()
+        .navigated
+        .lock()
+        .unwrap()
+        .remove(label);
 }
 
 /// Read a webview's current URL, tolerating the engine not having set one yet.
@@ -284,7 +319,8 @@ mod tests {
     fn tolerates_partial_blob() {
         // Older/partial saved sessions must deserialize via serde defaults
         // rather than dropping the whole restore.
-        let j = r#"{"mode":"direct","target":"http://x","windows":[{"tabs":[{"url":"http://x"}]}]}"#;
+        let j =
+            r#"{"mode":"direct","target":"http://x","windows":[{"tabs":[{"url":"http://x"}]}]}"#;
         let s: Session = serde_json::from_str(j).unwrap();
         assert_eq!(s.windows[0].active, 0);
         assert!(s.windows[0].frame.is_none());

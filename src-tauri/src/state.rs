@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
@@ -62,6 +62,13 @@ pub struct AppState {
     /// strip stores this per-TabEntry instead). Absent = default profile.
     /// Feeds session capture so a restored native tab reopens on its profile.
     pub window_profiles: Mutex<HashMap<String, String>>,
+    /// Webview/window labels that have committed at least one real (non-`about:`)
+    /// navigation. Session capture reads a webview's live URL ONLY for these:
+    /// wry's macOS `url()` unwraps a nil `WKWebView.URL` on a not-yet-navigated
+    /// webview and panics — and that panic poisons a tauri-runtime-wry mutex
+    /// mid-dispatch, so a later `navigate()` aborts the process (caught unwinds
+    /// don't undo the poison). Gating the call is the only safe fix.
+    pub navigated: Mutex<HashSet<String>>,
     /// Set once the saved-session decision has been made on this launch —
     /// restore runs on the FIRST successful connect only, never on later
     /// same-process reconnects/mode-switches (issue #18).
@@ -99,6 +106,7 @@ impl AppState {
             ui_state: Mutex::new(HashMap::new()),
             strip: Mutex::new(HashMap::new()),
             window_profiles: Mutex::new(HashMap::new()),
+            navigated: Mutex::new(HashSet::new()),
             session_restored: AtomicBool::new(false),
             restoring: AtomicBool::new(false),
             persist_busy: AtomicBool::new(false),
