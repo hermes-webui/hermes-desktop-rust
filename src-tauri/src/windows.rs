@@ -210,6 +210,10 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(initial_url))
         .title("Hermes WebUI")
         .inner_size(1280.0, 830.0)
+        // Let the WebUI's HTML5 drag-drop work (tree→composer drag, file-drop
+        // upload) — wry's native drag-drop handler would otherwise swallow it
+        // (issue #27). The shell intercepts no native drops.
+        .disable_drag_drop_handler()
         // Chrome (titlebar/tab bar) opens in the cached page theme — never
         // the OS appearance (Swift: window.appearance = currentAppearance).
         .theme(Some(cached_theme(app)))
@@ -523,6 +527,8 @@ fn build_restored_macos_tab(
     let win = match WebviewWindowBuilder::new(app, &label, WebviewUrl::External(blank))
         .title("Hermes WebUI")
         .inner_size(1280.0, 830.0)
+        // HTML5 drag-drop (issue #27) — see open_browser.
+        .disable_drag_drop_handler()
         .theme(Some(cached_theme(app)))
         .visible(false)
         .initialization_script(&init)
@@ -980,6 +986,30 @@ pub fn open_prefs(app: &AppHandle) {
             .theme(Some(cached_theme(&app)))
             .center()
             .build();
+    });
+}
+
+/// "What's New" window — version + this release's changelog (issue #6). Built
+/// off the calling thread like the other shell windows (invariant #9).
+pub fn open_whats_new(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("whatsnew") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if app.get_webview_window("whatsnew").is_some() {
+            return;
+        }
+        let _ =
+            WebviewWindowBuilder::new(&app, "whatsnew", WebviewUrl::App("whatsnew.html".into()))
+                .title("What's New")
+                .inner_size(540.0, 620.0)
+                .resizable(true)
+                .theme(Some(cached_theme(&app)))
+                .center()
+                .build();
     });
 }
 

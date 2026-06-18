@@ -382,6 +382,7 @@ const SHORTCUT_FORWARDER: &str = r##"
     var k = (e.key || '').toLowerCase();
     var send = function (v) { e.preventDefault(); e.stopPropagation(); EMIT('shortcut', v); };
     if (k === 'tab') { send(e.shiftKey ? 'prev-tab' : 'next-tab'); return; }
+    if (k === 'b' && e.shiftKey) { send('toggle-bar'); return; }
     if (e.shiftKey) return;
     if (k === 't') send('new-tab');
     else if (k === 'n') send('new-window');
@@ -564,6 +565,17 @@ pub fn install(app: &AppHandle) {
                         }
                         "next-tab" => crate::strip::cycle_tab(&handle, &label, true),
                         "prev-tab" => crate::strip::cycle_tab(&handle, &label, false),
+                        "toggle-bar" => {
+                            if crate::strip::enabled() && label.starts_with("tab-") {
+                                let app = handle.clone();
+                                let tab = label.clone();
+                                std::thread::spawn(move || {
+                                    if let Some(win) = crate::strip::window_of_tab(&tab) {
+                                        crate::strip::toggle_strip(&app, &win);
+                                    }
+                                });
+                            }
+                        }
                         "prefs" => windows::open_prefs(&handle),
                         "zoom-in" => crate::menu::zoom_step(&handle, 0.1),
                         "zoom-out" => crate::menu::zoom_step(&handle, -0.1),

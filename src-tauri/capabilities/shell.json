@@ -2,8 +2,8 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "shell-windows",
   "description": "Full IPC for bundled shell pages (splash, error, preferences, tab strip)",
-  "windows": ["splash", "error", "prefs", "main-*"],
-  "webviews": ["splash", "error", "prefs", "strip-*"],
+  "windows": ["splash", "error", "prefs", "whatsnew", "main-*"],
+  "webviews": ["splash", "error", "prefs", "whatsnew", "strip-*"],
   "permissions": [
     "core:default",
     "store:default",

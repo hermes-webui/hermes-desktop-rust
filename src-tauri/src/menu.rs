@@ -9,6 +9,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .about(None)
         .separator()
         .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?)
+        .item(&MenuItemBuilder::with_id("whats_new", "What's New").build(app)?)
         .item(&MenuItemBuilder::with_id("reveal_logs", "Reveal Log File").build(app)?)
         .separator()
         .item(
@@ -129,30 +130,43 @@ pub fn zoom_reset(app: &AppHandle) {
 /// Shortcut hints ride in the item text ("\t" column) rather than real
 /// accelerators so they never double-fire with the injected key forwarder.
 pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    use tauri::menu::IsMenuItem;
     let version = app.package_info().version.to_string();
     let item = |id: &str, text: &str| MenuItemBuilder::with_id(id, text).build(app);
-    Menu::with_items(
-        app,
-        &[
-            &item("new_tab", "New Tab\tCtrl+T")?,
-            &item("new_window", "New Window\tCtrl+N")?,
-            &PredefinedMenuItem::separator(app)?,
-            &item("reload", "Reload\tCtrl+R")?,
-            &item("find", "Find in Page…\tCtrl+F")?,
-            &PredefinedMenuItem::separator(app)?,
-            &item("zoom_in", "Zoom In\tCtrl+=")?,
-            &item("zoom_out", "Zoom Out\tCtrl+-")?,
-            &item("zoom_reset", "Actual Size\tCtrl+0")?,
-            &PredefinedMenuItem::separator(app)?,
-            &item("preferences", "Preferences…\tCtrl+,")?,
-            &item("open_browser", "Open in Browser")?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItemBuilder::with_id("about_version", format!("Hermes WebUI Desktop v{version}"))
-                .enabled(false)
-                .build(app)?,
-            &item("check_updates", "Check for Updates…")?,
-            &item("reveal_logs", "Reveal Log File")?,
-            &item("quit", "Quit")?,
-        ],
-    )
+
+    let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
+    items.push(Box::new(item("new_tab", "New Tab\tCtrl+T")?));
+    items.push(Box::new(item("new_window", "New Window\tCtrl+N")?));
+    // Hide the tab bar (issue #10) — not on Linux (GTK child-webview geometry,
+    // constraint #1). The shortcut is in the label since hiding removes this
+    // button, so Ctrl+Shift+B is how you bring the bar back.
+    if !cfg!(target_os = "linux") {
+        items.push(Box::new(item(
+            "toggle_strip",
+            "Hide Tab Bar\tCtrl+Shift+B",
+        )?));
+    }
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(item("reload", "Reload\tCtrl+R")?));
+    items.push(Box::new(item("find", "Find in Page…\tCtrl+F")?));
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(item("zoom_in", "Zoom In\tCtrl+=")?));
+    items.push(Box::new(item("zoom_out", "Zoom Out\tCtrl+-")?));
+    items.push(Box::new(item("zoom_reset", "Actual Size\tCtrl+0")?));
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(item("preferences", "Preferences…\tCtrl+,")?));
+    items.push(Box::new(item("open_browser", "Open in Browser")?));
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(
+        MenuItemBuilder::with_id("about_version", format!("Hermes WebUI Desktop v{version}"))
+            .enabled(false)
+            .build(app)?,
+    ));
+    items.push(Box::new(item("whats_new", "What's New")?));
+    items.push(Box::new(item("check_updates", "Check for Updates…")?));
+    items.push(Box::new(item("reveal_logs", "Reveal Log File")?));
+    items.push(Box::new(item("quit", "Quit")?));
+
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(|b| b.as_ref()).collect();
+    Menu::with_items(app, &refs)
 }

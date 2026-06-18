@@ -41,16 +41,56 @@ fn find_webview(win: &Window<Wry>, label: &str) -> Option<Webview<Wry>> {
     win.webviews().into_iter().find(|w| w.label() == label)
 }
 
-fn content_bounds(win: &Window<Wry>) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+fn content_bounds(win: &Window<Wry>, top: f64) -> (LogicalPosition<f64>, LogicalSize<f64>) {
     let scale = win.scale_factor().unwrap_or(1.0);
     let size = win
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or(LogicalSize::new(1280.0, 830.0));
     (
-        LogicalPosition::new(0.0, STRIP_HEIGHT),
-        LogicalSize::new(size.width, (size.height - STRIP_HEIGHT).max(0.0)),
+        LogicalPosition::new(0.0, top),
+        LogicalSize::new(size.width, (size.height - top).max(0.0)),
     )
+}
+
+/// Whether the strip is hidden for `window_label` (issue #10).
+fn strip_hidden(app: &AppHandle, window_label: &str) -> bool {
+    let state = app.state::<AppState>();
+    let strip = state.strip.lock().unwrap();
+    strip
+        .get(window_label)
+        .map(|e| e.strip_hidden)
+        .unwrap_or(false)
+}
+
+/// Y offset where the content webview begins: 0 when the strip is hidden, else
+/// the strip height.
+fn content_top(app: &AppHandle, window_label: &str) -> f64 {
+    if strip_hidden(app, window_label) {
+        0.0
+    } else {
+        STRIP_HEIGHT
+    }
+}
+
+/// Hide/show the tab strip for `window_label` (issue #10). Windows-only: macOS
+/// uses native tabs (no strip) and Linux can't re-fit GTK child webviews
+/// (constraint #1), so this is a no-op there. Caller should be off the main
+/// thread (it resizes the content webview).
+pub fn toggle_strip(app: &AppHandle, window_label: &str) {
+    if cfg!(target_os = "linux") {
+        log::info!("strip: tab-bar toggle unavailable on Linux (GTK child-webview geometry)");
+        return;
+    }
+    {
+        let state = app.state::<AppState>();
+        let mut strip = state.strip.lock().unwrap();
+        let Some(entry) = strip.get_mut(window_label) else {
+            return;
+        };
+        entry.strip_hidden = !entry.strip_hidden;
+    }
+    layout(app, window_label);
 }
 
 /// Per-tab webview data partition path. Each tab gets its own directory → its
@@ -73,15 +113,28 @@ fn remove_tab_partition(app: &AppHandle, tab_label: &str) {
     }
 }
 
-/// Wipe all tab data partitions. Called once at startup before any tab opens:
-/// partitions are session-scoped (chats live server-side), so orphans from a
-/// prior run or a crash would otherwise accumulate. No-op when none exist.
+/// Wipe ORPHAN tab data partitions at startup (before any tab opens). Keeps the
+/// partitions referenced by the saved session so a restored tab's login +
+/// cookies survive the restart (issue #28); removes the rest — jars from closed
+/// windows, crashes, or pre-0.5.0 session-scoped runs — so they don't pile up.
 pub fn clear_partitions(app: &AppHandle) {
+    let keep: std::collections::HashSet<String> = crate::session::load(app)
+        .map(|s| {
+            s.windows
+                .iter()
+                .flat_map(|w| w.tabs.iter())
+                .filter_map(|t| t.partition.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     if let Ok(base) = app.path().app_local_data_dir() {
         let dir = base.join("tab-partitions");
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                log::warn!("strip: could not clear tab partitions: {e}");
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !keep.contains(&name) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
             }
         }
     }
@@ -231,16 +284,29 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
                 Err(_) => continue,
             },
         };
-        // Re-seed only the (non-sensitive) profile selector; fresh jar otherwise.
-        let seed: Vec<Cookie<'static>> = if cfg!(not(target_os = "macos")) {
-            tab.profile
-                .as_deref()
-                .map(|v| vec![crate::session::profile_cookie(v)])
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        add_tab_with(app, &label, url, seed);
+        // With a saved partition, REUSE the on-disk jar (login + cookies persist,
+        // issue #28) — no seed needed. Without one (pre-0.5.0 blob / macOS),
+        // fall back to a fresh jar re-seeded with the profile selector (#18).
+        let seed: Vec<Cookie<'static>> =
+            if tab.partition.is_none() && cfg!(not(target_os = "macos")) {
+                tab.profile
+                    .as_deref()
+                    .map(|v| vec![crate::session::profile_cookie(v)])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        add_tab_with(
+            app,
+            &label,
+            TabSpec {
+                target: url,
+                seed,
+                partition_override: tab.partition.clone(),
+                profile_hint: tab.profile.clone(),
+                custom_title: tab.custom_title.clone(),
+            },
+        );
     }
     // Select the saved active tab.
     let active_label = {
@@ -328,19 +394,45 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
         Vec::new()
     };
 
-    add_tab_with(app, window_label, target, seed);
+    add_tab_with(
+        app,
+        window_label,
+        TabSpec {
+            target,
+            seed,
+            partition_override: None,
+            profile_hint: None,
+            custom_title: None,
+        },
+    );
 }
 
-/// Shared tab-creation body: build an isolated content webview for `target`,
-/// seeded with `seed` cookies, append it to `window_label`'s strip and make it
-/// active. Used by `add_tab` (seed = the opener's jar) and session restore
-/// (seed = the saved profile selector). Caller must be off the main thread.
-pub(crate) fn add_tab_with(
-    app: &AppHandle,
-    window_label: &str,
-    target: url::Url,
-    seed: Vec<Cookie<'static>>,
-) {
+/// Inputs to `add_tab_with` so `add_tab` (new tab, opener-seeded fresh jar) and
+/// `restore_window` (saved tab, reused jar) share one creation path.
+pub(crate) struct TabSpec {
+    pub target: url::Url,
+    /// Cookies to seed into a FRESH jar (new tab); empty when reusing a jar.
+    pub seed: Vec<Cookie<'static>>,
+    /// Some = reuse this on-disk partition dir (restore → login/cookies survive,
+    /// issue #28); None = a fresh jar keyed by the new tab label.
+    pub partition_override: Option<String>,
+    /// Initial profile dot before the first load re-reads the cookie (restore).
+    pub profile_hint: Option<String>,
+    /// Restored user-given tab name (issue #7).
+    pub custom_title: Option<String>,
+}
+
+/// Shared tab-creation body: build an isolated content webview, append it to
+/// `window_label`'s strip and make it active. Caller must be off the main
+/// thread.
+pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
+    let TabSpec {
+        target,
+        seed,
+        partition_override,
+        profile_hint,
+        custom_title,
+    } = spec;
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
     };
@@ -366,27 +458,34 @@ pub(crate) fn add_tab_with(
     let init = bridge::init_script(&tab_label, &hex, false);
 
     // Per-tab cookie isolation (issue #3): each tab gets its own data partition
-    // (separate jar) so the WebUI's HttpOnly `hermes_profile` selector is scoped
-    // to the tab. macOS (HERMES_FORCE_STRIP) has no data_directory → no jar.
+    // (separate jar). A restored tab REUSES its saved partition so login +
+    // cookies survive the restart (issue #28); a new tab gets a fresh jar keyed
+    // by its label. macOS (HERMES_FORCE_STRIP) has no data_directory → no jar.
+    let reuse = partition_override.is_some();
+    let partition_id = partition_override.unwrap_or_else(|| tab_label.clone());
     let partition = if cfg!(not(target_os = "macos")) {
-        tab_partition_dir(app, &tab_label)
+        tab_partition_dir(app, &partition_id)
     } else {
         None
     };
     if let Some(ref dir) = partition {
-        // Guarantee a FRESH jar at the point of use — best-effort cleanup
-        // elsewhere can leave a stale folder, and a recurring tab label would
-        // then inherit a prior session's cookies.
-        let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::create_dir_all(dir);
+        if reuse {
+            let _ = std::fs::create_dir_all(dir); // keep the existing jar
+        } else {
+            let _ = std::fs::remove_dir_all(dir); // guarantee a fresh jar
+            let _ = std::fs::create_dir_all(dir);
+        }
     }
-    // The profile this tab opens on (the seeded `hermes_profile` value, if any)
-    // — shown in the strip's profile dot immediately, before the first real
-    // page load re-reads it (issue #8).
-    let seed_profile = profile_from_cookies(&seed);
+    // The profile this tab opens on — a restore hint, else the seed cookie's
+    // value — shown in the strip's profile dot before the first load re-reads it
+    // (issue #8).
+    let seed_profile = profile_hint.or_else(|| profile_from_cookies(&seed));
 
-    // about:blank first so the seed lands before the real navigation (no race).
-    let initial_url = if partition.is_some() {
+    // Seed only a FRESH isolated jar; a reused jar already carries its cookies.
+    let do_seed = partition.is_some() && !reuse && !seed.is_empty();
+    // about:blank first ONLY when seeding (so the cookie lands before the real
+    // navigation); reused / un-isolated tabs load the target directly.
+    let initial_url = if do_seed {
         WebviewUrl::External(url::Url::parse("about:blank").unwrap())
     } else {
         WebviewUrl::External(target.clone())
@@ -394,7 +493,16 @@ pub(crate) fn add_tab_with(
 
     let nav_app = app.clone();
     let load_window = window_label.to_string();
-    let mut wb = WebviewBuilder::new(&tab_label, initial_url).background_color(bg);
+    // Disable wry's native OS drag-drop handler so the WebUI's own HTML5
+    // drag-drop works (issue #27): with it enabled, the native layer intercepts
+    // drag events over the webview and the page never sees `dragstart`/`drop`,
+    // so dragging a workspace-tree item onto the composer shows the OS "no-drop"
+    // cursor and never registers. Off, the page handles in-page drag AND
+    // file-from-Finder drops (→ the WebUI's upload handler). The shell
+    // intercepts no native drops, so nothing is lost.
+    let mut wb = WebviewBuilder::new(&tab_label, initial_url)
+        .background_color(bg)
+        .disable_drag_drop_handler();
     if let Some(ref dir) = partition {
         wb = wb.data_directory(dir.clone());
     }
@@ -441,7 +549,7 @@ pub(crate) fn add_tab_with(
             std::thread::spawn(move || capture_tab_profile(&cap_app, &cap_win, &cap_tab));
         });
 
-    let (pos, size) = content_bounds(&win);
+    let (pos, size) = content_bounds(&win, content_top(app, window_label));
     let webview = match win.add_child(wb, pos, size) {
         Ok(w) => w,
         Err(e) => {
@@ -450,10 +558,10 @@ pub(crate) fn add_tab_with(
         }
     };
 
-    // Seed the isolated jar, then load the real target — cookies are committed
+    // Seed the FRESH jar, then load the real target — cookies are committed
     // before the navigation request fires (set_cookie is synchronous on
     // WebKitGTK; WebView2's AddOrUpdateCookie completes before navigate).
-    if partition.is_some() {
+    if do_seed {
         for cookie in seed {
             let _ = webview.set_cookie(cookie);
         }
@@ -472,11 +580,14 @@ pub(crate) fn add_tab_with(
                 let _ = prev_wv.hide();
             }
         }
+        let title = custom_title.clone().unwrap_or_else(|| "New Tab".into());
         entry.tabs.push(TabEntry {
             label: tab_label.clone(),
-            title: "New Tab".into(),
+            title,
             attention: false,
             profile: seed_profile,
+            partition: partition_id,
+            custom_title,
         });
         entry.active = entry.tabs.len() - 1;
     }
@@ -519,7 +630,7 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         // webview — it crashes natively (isolated by Linux smoke v3/v5;
         // creation-time bounds render fine). Show/hide alone is safe.
         if !cfg!(target_os = "linux") {
-            let (pos, size) = content_bounds(&win);
+            let (pos, size) = content_bounds(&win, content_top(app, window_label));
             let _ = wv.set_position(pos);
             let _ = wv.set_size(size);
         }
@@ -528,6 +639,9 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     }
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);
+    // Re-read the activated tab's profile — catches a profile switch made inside
+    // it while it was hidden, so the dot is correct on switch-back (issue #26).
+    capture_tab_profile(app, window_label, tab_label);
     crate::session::persist(app);
 }
 
@@ -536,7 +650,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         return;
     };
     let state = app.state::<AppState>();
-    let (remaining, next_active) = {
+    let (remaining, next_active, closed_partition) = {
         let mut strip = state.strip.lock().unwrap();
         let Some(entry) = strip.get_mut(window_label) else {
             return;
@@ -550,6 +664,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         let Some(idx) = entry.tabs.iter().position(|t| t.label == tab_label) else {
             return;
         };
+        let closed_partition = entry.tabs[idx].partition.clone();
         entry.tabs.remove(idx);
         if entry.active >= entry.tabs.len() {
             entry.active = entry.tabs.len() - 1;
@@ -559,6 +674,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         (
             entry.tabs.len(),
             entry.tabs.get(entry.active).map(|t| t.label.clone()),
+            closed_partition,
         )
     };
     state.raw_titles.lock().unwrap().remove(tab_label);
@@ -566,7 +682,9 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     if let Some(wv) = find_webview(&win, tab_label) {
         let _ = wv.close();
     }
-    remove_tab_partition(app, tab_label);
+    // The user explicitly closed this tab → drop its jar (by partition id, which
+    // for a restored tab differs from the regenerated label).
+    remove_tab_partition(app, &closed_partition);
     if let Some(next) = next_active {
         select_tab(app, window_label, &next);
     }
@@ -663,6 +781,10 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
                 SessionTab {
                     url,
                     profile: t.profile.clone(),
+                    // Persist the on-disk jar dir so restore reuses it (login
+                    // survives, #28). Empty only on macOS forced-strip (no jar).
+                    partition: (!t.partition.is_empty()).then(|| t.partition.clone()),
+                    custom_title: t.custom_title.clone(),
                 }
             })
             .collect();
@@ -699,10 +821,17 @@ pub fn layout(app: &AppHandle, window_label: &str) {
         logical.width,
         logical.height
     );
+    let hidden = strip_hidden(app, window_label);
     let strip_label = format!("strip-{}", window_seq(window_label));
     if let Some(strip_wv) = find_webview(&win, &strip_label) {
-        let _ = strip_wv.set_position(LogicalPosition::new(0.0, 0.0));
-        let _ = strip_wv.set_size(LogicalSize::new(logical.width, STRIP_HEIGHT));
+        if hidden {
+            // Tab bar hidden (#10) — content reclaims the full window.
+            let _ = strip_wv.hide();
+        } else {
+            let _ = strip_wv.show();
+            let _ = strip_wv.set_position(LogicalPosition::new(0.0, 0.0));
+            let _ = strip_wv.set_size(LogicalSize::new(logical.width, STRIP_HEIGHT));
+        }
     }
     let state = app.state::<AppState>();
     let active = {
@@ -714,7 +843,7 @@ pub fn layout(app: &AppHandle, window_label: &str) {
     };
     if let Some(active) = active {
         if let Some(wv) = find_webview(&win, &active) {
-            let (pos, sz) = content_bounds(&win);
+            let (pos, sz) = content_bounds(&win, if hidden { 0.0 } else { STRIP_HEIGHT });
             let _ = wv.set_position(pos);
             let _ = wv.set_size(sz);
         }
@@ -739,13 +868,54 @@ pub fn set_tab_title(app: &AppHandle, tab_label: &str, title: &str, attention: b
         if let Some(entry) = strip.get_mut(&window_label) {
             if let Some(tab) = entry.tabs.iter_mut().find(|t| t.label == tab_label) {
                 let p = prefs::load(app);
-                tab.title = windows::display_title(title, &p.connection_mode, &p.target_url, true);
+                // A user-renamed tab (#7) keeps its name regardless of the page
+                // title; the page title is still recorded (raw_titles above) so
+                // clearing the rename can fall back to it.
+                if tab.custom_title.is_none() {
+                    tab.title =
+                        windows::display_title(title, &p.connection_mode, &p.target_url, true);
+                }
                 tab.attention = attention;
             }
         }
     }
     emit_tabs(app, &window_label);
     refresh_window_title(app, &window_label);
+}
+
+/// Rename a strip tab (issue #7). `name` = the user's label, or None/empty to
+/// clear it and fall back to the page title. Persisted so it survives restart.
+pub fn rename_tab(app: &AppHandle, window_label: &str, tab_label: &str, name: Option<String>) {
+    let name = name.and_then(|n| {
+        let t = n.trim();
+        (!t.is_empty()).then(|| t.chars().take(60).collect::<String>())
+    });
+    let state = app.state::<AppState>();
+    {
+        let p = prefs::load(app);
+        let raw = state
+            .raw_titles
+            .lock()
+            .unwrap()
+            .get(tab_label)
+            .cloned()
+            .unwrap_or_default();
+        let mut strip = state.strip.lock().unwrap();
+        let Some(tab) = strip
+            .get_mut(window_label)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.label == tab_label))
+        else {
+            return;
+        };
+        tab.title = match &name {
+            Some(n) => n.clone(),
+            None => windows::display_title(&raw, &p.connection_mode, &p.target_url, true),
+        };
+        tab.custom_title = name;
+    }
+    emit_tabs(app, window_label);
+    refresh_window_title(app, window_label);
+    crate::session::persist(app);
 }
 
 /// Extract the `hermes_profile` cookie value from a cookie set. `None` means
@@ -792,6 +962,27 @@ fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
     if changed {
         emit_tabs(app, window_label);
         crate::session::persist(app);
+    }
+}
+
+/// Re-read every strip tab's profile cookie and repaint dots that changed
+/// (issue #26). The per-tab dot otherwise only refreshes on open / full reload,
+/// so switching profile *inside* a tab (an SPA re-render, no page load) left it
+/// stale, and the first tabs after a relogin could come up with no dot. A light
+/// periodic sweep plus a re-capture on tab activation covers both without a
+/// WebUI signal. `capture_tab_profile` only emits when a value actually
+/// changed, so this is cheap. Runs on a worker thread (cookie reads marshal).
+pub fn recapture_profiles(app: &AppHandle) {
+    let pairs: Vec<(String, String)> = {
+        let state = app.state::<AppState>();
+        let strip = state.strip.lock().unwrap();
+        strip
+            .iter()
+            .flat_map(|(win, e)| e.tabs.iter().map(move |t| (win.clone(), t.label.clone())))
+            .collect()
+    };
+    for (win, tab) in pairs {
+        capture_tab_profile(app, &win, &tab);
     }
 }
 
@@ -885,7 +1076,11 @@ pub fn emit_tabs(app: &AppHandle, window_label: &str) {
     let _ = app.emit("tabs-changed", snapshot(app, window_label));
 }
 
-/// Window destroyed: drop its registry entries.
+/// Window destroyed: drop its registry entries. NOTE: this does NOT delete the
+/// tabs' data partitions — a Destroyed event also fires on quit, and wiping
+/// then would erase the login/cookies we want to restore (issue #28). Partitions
+/// are removed on explicit tab close (`close_tab`) and orphans are swept at the
+/// next startup (`clear_partitions`), which keeps only session-referenced jars.
 pub fn forget_window(app: &AppHandle, window_label: &str) {
     let state = app.state::<AppState>();
     let removed = state.strip.lock().unwrap().remove(window_label);
@@ -897,7 +1092,6 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
             }
         }
         for tab in &entry.tabs {
-            remove_tab_partition(app, &tab.label);
             crate::session::forget_navigated(app, &tab.label);
         }
     }

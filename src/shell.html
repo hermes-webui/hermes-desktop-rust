@@ -56,6 +56,20 @@
         text-overflow: ellipsis;
         font-size: 12px;
       }
+      /* Inline rename input (issue #7) */
+      .tab input.rename {
+        flex: 1;
+        min-width: 0;
+        font: 12px inherit;
+        font-family: inherit;
+        color: var(--hermes-fg);
+        background: var(--hermes-bg);
+        border: 1px solid var(--hermes-accent, #0a84ff);
+        border-radius: 4px;
+        padding: 1px 4px;
+        margin: 0;
+        outline: none;
+      }
       /* Attention dot: a tab whose session has a pending approval/clarify
          popup waiting on the user (issue #14). */
       .tab .attn {
@@ -189,6 +203,46 @@
           .forEach((el) => el.classList.remove("drop-before", "drop-after"));
       }
 
+      // Inline tab rename (issue #7): swap the title span for an input.
+      function startRename(el, titleSpan, tabLabel, current) {
+        if (el.querySelector("input.rename")) return;
+        const input = document.createElement("input");
+        input.className = "rename";
+        input.value = current;
+        el.replaceChild(input, titleSpan);
+        input.focus();
+        input.select();
+        let done = false;
+        const finish = (save) => {
+          if (done) return;
+          done = true;
+          if (save) {
+            // Empty/whitespace clears the custom name (backend reverts to title).
+            hermes.invoke("tab_rename", {
+              window: WIN,
+              tab: tabLabel,
+              name: input.value,
+            });
+            // backend emits tabs-changed → renderTabs rebuilds the strip.
+          } else {
+            hermes.invoke("tabs_snapshot", { window: WIN }).then(renderTabs);
+          }
+        };
+        input.addEventListener("keydown", (e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") {
+            e.preventDefault();
+            finish(true);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            finish(false);
+          }
+        });
+        input.addEventListener("blur", () => finish(true));
+        input.addEventListener("click", (e) => e.stopPropagation());
+        input.addEventListener("dblclick", (e) => e.stopPropagation());
+      }
+
       function renderTabs(snapshot) {
         if (snapshot.window !== WIN) return;
         const root = document.getElementById("tabs");
@@ -221,6 +275,11 @@
           const t = document.createElement("span");
           t.className = "t";
           t.textContent = tab.title || "New Tab";
+          // Double-click the title to rename the tab (issue #7).
+          t.addEventListener("dblclick", (e) => {
+            e.stopPropagation();
+            startRename(el, t, tab.label, tab.title || "");
+          });
           const x = document.createElement("button");
           x.className = "x";
           x.textContent = "×";

@@ -28,6 +28,15 @@ pub struct TabEntry {
     /// per-tab profile dot (issue #8) and is persisted so a restored tab
     /// reopens on the same profile (issue #18).
     pub profile: Option<String>,
+    /// The on-disk data-partition directory name backing this tab's cookie jar
+    /// (Windows/Linux). Normally the tab label, but a tab restored from a saved
+    /// session reuses its *previous* partition so login + cookies survive the
+    /// restart (issue #28). Not sent to the frontend.
+    #[serde(skip)]
+    pub partition: String,
+    /// A user-given tab name that overrides the page title in the strip
+    /// (issue #7). None = follow the document title.
+    pub custom_title: Option<String>,
 }
 
 /// Per-window tab state for strip mode.
@@ -36,6 +45,11 @@ pub struct WindowTabs {
     pub tabs: Vec<TabEntry>,
     pub active: usize,
     pub tab_seq: u64,
+    /// The tab strip is hidden to reclaim its 38px for content (issue #10).
+    /// Toggled via the strip menu / Ctrl+Shift+B; the content webview then
+    /// fills the whole window. Windows-only (macOS = native tabs; Linux can't
+    /// re-fit GTK child webviews — constraint #1).
+    pub strip_hidden: bool,
 }
 
 pub struct AppState {
