@@ -119,14 +119,18 @@ fn run(app: &AppHandle) {
         let rp: u32 = p.remote_port.trim().parse().unwrap_or(8787);
         tunnel::start(app, p.ssh_user.trim(), p.ssh_host.trim(), lp, rp)
     } else {
-        let reachable = health::http_reachable(&p.target_url, Duration::from_secs(4));
-        if !reachable {
+        // Readiness, not mere reachability (issue #28): a proxy answering 502
+        // while its upstream boots must NOT pass, or restore reopens every tab
+        // onto a gateway-error page. http_ready rejects 502/503/504; the
+        // recovery loop below then polls until the upstream really serves.
+        let ready = health::http_ready(&p.target_url, Duration::from_secs(4));
+        if !ready {
             *state.last_error_hint.lock().unwrap() = format!(
-                "Nothing answered at {}. Is hermes-webui running? (./start.sh)",
+                "Nothing is serving at {} yet. Is hermes-webui up? (a proxy may be returning 502/503 while it starts)",
                 p.target_url
             );
         }
-        reachable
+        ready
     };
 
     // The Swift app lingers half a beat so the splash doesn't strobe.
@@ -181,12 +185,20 @@ fn start_health_loop(app: &AppHandle, target: String) {
         if state.health_gen.load(Ordering::SeqCst) != generation {
             return;
         }
-        let healthy = health::http_reachable(&url, Duration::from_secs(5));
+        // Readiness, not reachability: a 502/503/504 from a proxy whose upstream
+        // died counts as DOWN (issue #28), so the badge flips and the recovery
+        // reload below fires — `http_reachable` would have masked it as healthy.
+        let healthy = health::http_ready(&url, Duration::from_secs(5));
         let was = state.healthy.swap(healthy, Ordering::SeqCst);
         if was != healthy {
             log::info!("health: {} -> {}", was, healthy);
             windows::set_offline_badge(&app, !healthy);
             windows::refresh_all_titles(&app);
+            // Recovered (down→up): reload content so any tab stuck on a gateway
+            // error page re-fetches the now-serving app (per-tab 502 recovery).
+            if healthy {
+                windows::eval_all_content(&app, "location.reload();");
+            }
             // Strip pages (Windows/Linux) show the health dot from this event.
             use tauri::Emitter;
             let _ = app.emit("health-changed", serde_json::json!({ "healthy": healthy }));
@@ -209,8 +221,10 @@ fn start_recovery_loop(app: &AppHandle, target: String) {
         if app.get_webview_window("error").is_none() {
             return;
         }
-        if health::http_reachable(&target, Duration::from_secs(3)) {
-            log::info!("recovery: target answered — auto-reconnecting");
+        // Wait for real readiness (2xx/3xx/4xx), not a proxy 502/503/504, before
+        // reconnecting — so restore fires only once the upstream is serving (#28).
+        if health::http_ready(&target, Duration::from_secs(3)) {
+            log::info!("recovery: target serving — auto-reconnecting");
             reconnect(&app);
             return;
         }

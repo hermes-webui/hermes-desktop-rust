@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="shared/shell.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--hermes-bg);
+        color: var(--hermes-fg);
+        font:
+          13px/1.5 -apple-system,
+          system-ui,
+          sans-serif;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 18px 22px 10px;
+        border-bottom: 1px solid var(--hermes-border);
+      }
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+      }
+      header .ver {
+        color: var(--hermes-fg-secondary);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      main {
+        padding: 8px 22px 22px;
+        overflow: auto;
+        flex: 1;
+      }
+      main h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--hermes-fg-secondary);
+        margin: 18px 0 6px;
+      }
+      main ul {
+        margin: 4px 0;
+        padding-left: 20px;
+      }
+      main li {
+        margin: 4px 0;
+      }
+      main p {
+        margin: 6px 0;
+      }
+      main code {
+        background: var(--hermes-control-bg);
+        border-radius: 4px;
+        padding: 1px 5px;
+        font-size: 12px;
+      }
+      footer {
+        padding: 12px 22px;
+        border-top: 1px solid var(--hermes-border);
+        text-align: right;
+      }
+      button {
+        font: inherit;
+        padding: 6px 16px;
+        border-radius: 6px;
+        border: 1px solid var(--hermes-border);
+        background: var(--hermes-control-bg);
+        color: var(--hermes-fg);
+        cursor: pointer;
+      }
+      a {
+        color: var(--hermes-accent, #0a84ff);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>What's New</h1>
+      <div class="ver" id="ver"></div>
+    </header>
+    <main id="notes">Loading…</main>
+    <footer>
+      <button id="full">Full changelog ↗</button>
+    </footer>
+    <script src="shared/shell.js"></script>
+    <script>
+      // Minimal, SAFE markdown → HTML for the changelog section: builds DOM
+      // nodes (no innerHTML of untrusted text) so bundled notes render cleanly
+      // without a markdown dependency. Supports ###/## headings, - bullets,
+      // **bold**, and `code`; everything else is plain text.
+      function inline(parent, text) {
+        // Split on `code` and **bold**, append as text/elements (no raw HTML).
+        const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+        let last = 0,
+          m;
+        while ((m = re.exec(text))) {
+          if (m.index > last)
+            parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+          const tok = m[0];
+          if (tok.startsWith("`")) {
+            const c = document.createElement("code");
+            c.textContent = tok.slice(1, -1);
+            parent.appendChild(c);
+          } else {
+            const b = document.createElement("strong");
+            b.textContent = tok.slice(2, -2);
+            parent.appendChild(b);
+          }
+          last = re.lastIndex;
+        }
+        if (last < text.length)
+          parent.appendChild(document.createTextNode(text.slice(last)));
+      }
+
+      function render(md) {
+        const root = document.getElementById("notes");
+        root.textContent = "";
+        let ul = null;
+        md.split("\n").forEach((line) => {
+          const l = line.trim();
+          if (l.startsWith("- ")) {
+            if (!ul) {
+              ul = document.createElement("ul");
+              root.appendChild(ul);
+            }
+            const li = document.createElement("li");
+            inline(li, l.slice(2));
+            ul.appendChild(li);
+            return;
+          }
+          ul = null;
+          if (!l) return;
+          if (l.startsWith("### ") || l.startsWith("## ")) {
+            const h = document.createElement("h2");
+            h.textContent = l.replace(/^#+\s*/, "");
+            root.appendChild(h);
+          } else {
+            const p = document.createElement("p");
+            inline(p, l);
+            root.appendChild(p);
+          }
+        });
+      }
+
+      hermes.invoke("get_boot_info").then((info) => hermes.applyBootTheme(info));
+      hermes.invoke("whats_new").then((info) => {
+        document.getElementById("ver").textContent =
+          "Hermes WebUI Desktop v" + info.version;
+        render(info.body || "");
+      });
+      document.getElementById("full").addEventListener("click", () => {
+        // Open the GitHub releases page in the system browser.
+        hermes.invoke("open_releases_page").catch(() => {});
+      });
+    </script>
+  </body>
+</html>

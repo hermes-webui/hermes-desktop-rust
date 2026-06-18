@@ -206,6 +206,10 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
             tabs.push(SessionTab {
                 url,
                 profile: profiles.get(member.label()).cloned(),
+                // macOS native tabs use incognito stores (no on-disk jar to
+                // reuse) and no custom-title rename surface — both None.
+                partition: None,
+                custom_title: None,
             });
         }
         if tabs.is_empty() {

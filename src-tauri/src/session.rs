@@ -35,6 +35,13 @@ pub struct SessionTab {
     pub url: String,
     #[serde(default)]
     pub profile: Option<String>,
+    /// The tab's on-disk partition dir (Windows/Linux) — reused on restore so
+    /// login/cookies survive (issue #28). Absent for macOS / pre-0.5.0 blobs.
+    #[serde(default)]
+    pub partition: Option<String>,
+    /// User-given tab name (issue #7), restored verbatim.
+    #[serde(default)]
+    pub custom_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -174,7 +181,14 @@ pub fn maybe_restore(app: &AppHandle) -> bool {
     let Some(saved) = load(app) else {
         return false;
     };
-    if saved.windows.is_empty() || saved.mode != p.connection_mode || saved.target != p.target_url {
+    // Lenient target match (issue #28 "tabs lost"): a trailing-slash difference
+    // between runs (e.g. a Tailscale URL saved with vs without "/") must not
+    // silently skip restore.
+    let norm = |s: &str| s.trim_end_matches('/').to_string();
+    if saved.windows.is_empty()
+        || saved.mode != p.connection_mode
+        || norm(&saved.target) != norm(&p.target_url)
+    {
         return false;
     }
     // Seed last_session so the first persist() doesn't immediately rewrite an
@@ -288,10 +302,14 @@ mod tests {
                     SessionTab {
                         url: "http://localhost:8787/".into(),
                         profile: None,
+                        partition: Some("tab-1-1".into()),
+                        custom_title: None,
                     },
                     SessionTab {
                         url: "http://localhost:8787/c/42".into(),
                         profile: Some("work".into()),
+                        partition: Some("tab-1-2".into()),
+                        custom_title: Some("My Renamed Tab".into()),
                     },
                 ],
             }],
@@ -301,6 +319,14 @@ mod tests {
         assert_eq!(back.windows[0].active, 1);
         assert_eq!(back.windows[0].frame, Some([10, 20, 1280, 830]));
         assert_eq!(back.windows[0].tabs[1].profile.as_deref(), Some("work"));
+        assert_eq!(
+            back.windows[0].tabs[1].partition.as_deref(),
+            Some("tab-1-2")
+        );
+        assert_eq!(
+            back.windows[0].tabs[1].custom_title.as_deref(),
+            Some("My Renamed Tab")
+        );
     }
 
     #[test]

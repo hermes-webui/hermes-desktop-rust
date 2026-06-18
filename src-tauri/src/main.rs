@@ -19,6 +19,24 @@ mod windows;
 use state::AppState;
 use tauri::Manager;
 
+/// The shipped changelog, bundled at build time so "What's New" works offline
+/// (issue #6). Repo-root CHANGELOG.md, relative to this file (src-tauri/src/).
+const CHANGELOG_MD: &str = include_str!("../../CHANGELOG.md");
+
+/// Extract the `## [vX.Y.Z]` section body for `version` from the changelog
+/// (everything up to the next `## ` heading). None if absent.
+fn changelog_section(md: &str, version: &str) -> Option<String> {
+    let header = format!("## [v{version}]");
+    let start = md.lines().position(|l| l.starts_with(&header))?;
+    let body: Vec<&str> = md
+        .lines()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect();
+    let trimmed = body.join("\n").trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
 #[tauri::command]
 fn get_prefs(app: tauri::AppHandle) -> prefs::Prefs {
     prefs::load(&app)
@@ -55,6 +73,28 @@ fn open_preferences(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn open_whats_new(app: tauri::AppHandle) {
+    windows::open_whats_new(&app);
+}
+
+#[tauri::command]
+fn open_releases_page() {
+    let _ = tauri_plugin_opener::open_url(
+        "https://github.com/hermes-webui/hermes-desktop-rust/releases",
+        None::<&str>,
+    );
+}
+
+/// Current version + this version's changelog section (issue #6).
+#[tauri::command]
+fn whats_new(app: tauri::AppHandle) -> serde_json::Value {
+    let version = app.package_info().version.to_string();
+    let body = changelog_section(CHANGELOG_MD, &version)
+        .unwrap_or_else(|| "Release notes are on the GitHub releases page.".to_string());
+    serde_json::json!({ "version": version, "body": body })
+}
+
+#[tauri::command]
 fn close_prefs(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("prefs") {
         let _ = w.destroy();
@@ -88,6 +128,11 @@ fn tab_close(app: tauri::AppHandle, window: String, tab: String) {
 #[tauri::command]
 fn tab_reorder(app: tauri::AppHandle, window: String, tab: String, index: usize) {
     std::thread::spawn(move || strip::reorder_tab(&app, &window, &tab, index));
+}
+
+#[tauri::command]
+fn tab_rename(app: tauri::AppHandle, window: String, tab: String, name: Option<String>) {
+    std::thread::spawn(move || strip::rename_tab(&app, &window, &tab, name));
 }
 
 #[tauri::command]
@@ -176,6 +221,9 @@ fn main() {
             test_connection,
             retry_connect,
             open_preferences,
+            open_whats_new,
+            whats_new,
+            open_releases_page,
             close_prefs,
             get_boot_info,
             tabs_snapshot,
@@ -183,6 +231,7 @@ fn main() {
             tab_select,
             tab_close,
             tab_reorder,
+            tab_rename,
             new_window_cmd,
             strip_menu
         ])
@@ -249,15 +298,20 @@ fn main() {
                     updater::spawn_check(&update_handle, false);
                 });
             }
-            // Session autosave (issue #18): periodically capture windows/tabs so
-            // a frame move or an SPA navigation (neither of which fires a
-            // structural event) is reflected. Cheap — `persist` writes only when
-            // the captured session differs from the last write.
+            // Session autosave (issue #18) + per-tab profile-dot refresh (#26):
+            // one 4s timer. `persist` captures windows/tabs so a frame move or
+            // SPA navigation (no structural event) is reflected; the profile
+            // sweep re-reads each strip tab's cookie so a profile switched
+            // *inside* a tab (an SPA re-render) repaints its dot. Both are cheap
+            // and only act on a real change.
             {
                 let sess_handle = handle.clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(4));
                     session::persist(&sess_handle);
+                    if strip::enabled() {
+                        strip::recapture_profiles(&sess_handle);
+                    }
                 });
             }
             // Chrome poller — the Tauri stand-in for the Swift app's
@@ -277,6 +331,17 @@ fn main() {
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "preferences" => windows::open_prefs(app),
+            "whats_new" => windows::open_whats_new(app),
+            "toggle_strip" => {
+                // Hide/show the tab strip of the focused window (issue #10).
+                // Off-thread: it resizes the content webview.
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    if let Some(w) = windows::focused_or_recent_window_handle(&app) {
+                        strip::toggle_strip(&app, w.label());
+                    }
+                });
+            }
             "new_window" => conn::open_new_session(app, false),
             "new_tab" => conn::open_new_session(app, true),
             "paste" => paste::paste_into_focused(app),
@@ -390,4 +455,18 @@ fn main() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::changelog_section;
+
+    #[test]
+    fn extracts_current_version_section() {
+        let md = "# Changelog\n\n## [v0.5.0] — 2026-06-17\n\n### Fixed\n\n- A real fix\n\n## [v0.4.1] — 2026-06-17\n\n- Older stuff\n";
+        let s = changelog_section(md, "0.5.0").expect("section");
+        assert!(s.contains("A real fix"));
+        assert!(!s.contains("Older stuff"), "must stop at the next heading");
+        assert!(changelog_section(md, "9.9.9").is_none());
+    }
 }

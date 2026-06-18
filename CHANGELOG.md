@@ -1,5 +1,47 @@
 # Changelog
 
+## [v0.5.0] — 2026-06-17
+
+A bug-squash release focused on things that worked worse than the web, plus tab
+and session fixes and a few tab conveniences.
+
+### Fixed
+
+- **You can drag files from the workspace tree onto the chat composer again**
+  (issue #27, macOS/Windows/Linux). The desktop wrapper left wry's native OS
+  drag-drop handler enabled, which intercepted drag events over the page so the
+  WebUI's own drag-drop never fired — you got the "no-drop" cursor. The handler
+  is now disabled on the content webviews, so in-page drag works **and**
+  dragging a file in from Finder/Explorer drops onto the composer to upload.
+- **Restored tabs no longer come back as `502 Bad Gateway` behind a reverse
+  proxy** (issue #28). On launch the app treated *any* HTTP response — including
+  a proxy's `502`/`503`/`504` while its upstream was still booting — as "ready,"
+  so it reopened your tabs onto gateway-error pages that never recovered.
+  Readiness now rejects those gateway statuses (a real login page / `404` / `405`
+  still counts as up), waits for the server to actually serve, and reloads any
+  tab if the server recovers while the app is open.
+- **Login now survives a restart on Windows/Linux** (issue #28). Each tab's
+  cookie jar is kept on disk and reused when its tab is restored, so you stay
+  logged in across quit/reopen and updates — matching a browser. (Only the jar
+  is reused; nothing sensitive is written to the prefs file. macOS tabs use an
+  isolation model that can't persist, so they still re-prompt for login.)
+- **The per-tab profile dot updates when you switch profile inside a tab**
+  (issue #26, Windows/Linux). It previously only refreshed when a tab was opened
+  or fully reloaded, so an in-tab profile switch left the dot showing the old
+  color; it now re-reads on tab activation and a light periodic sweep, and the
+  first tabs after a re-login get their dots too.
+
+### Added
+
+- **Rename a tab** by double-clicking its title (issue #7, Windows/Linux strip).
+  The name sticks regardless of the page title and is restored across restart;
+  clear it to fall back to the page title.
+- **Hide the tab bar** to reclaim its space (issue #10, Windows) — from the ⋯
+  menu or **Ctrl+Shift+B** (which also brings it back). macOS uses native tabs;
+  Linux is pending an upstream webview-geometry fix.
+- **What's New** in the app menu / ⋯ menu (issue #6) shows the current version
+  and this release's changelog in-app, with a link to the full changelog.
+
 ## [v0.4.1] — 2026-06-17
 
 ### Fixed
