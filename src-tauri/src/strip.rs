@@ -37,6 +37,12 @@ fn window_seq(window_label: &str) -> &str {
     window_label.strip_prefix("main-").unwrap_or("0")
 }
 
+/// Numeric tab-sequence suffix of a partition id / tab label like `tab-1-3` → 3
+/// (used to advance `tab_seq` past reused partition names on restore, #28).
+fn partition_suffix(id: &str) -> Option<u64> {
+    id.rsplit('-').next().and_then(|n| n.parse::<u64>().ok())
+}
+
 fn find_webview(win: &Window<Wry>, label: &str) -> Option<Webview<Wry>> {
     win.webviews().into_iter().find(|w| w.label() == label)
 }
@@ -307,6 +313,27 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
                 custom_title: tab.custom_title.clone(),
             },
         );
+    }
+    // Advance tab_seq past the highest REUSED partition suffix (#28 collision):
+    // tab_seq restarts at 0 each launch, but restored tabs reuse their old
+    // partition names (e.g. `tab-1-3`, with gaps from closed/reordered tabs).
+    // Without this, a later new tab could be labeled `tab-1-3` and its
+    // remove-before-create would wipe the restored tab's live jar — losing its
+    // login and making two tabs share one jar (the #3 bleed). Bumping the
+    // counter past every reused suffix guarantees new tabs get fresh names.
+    {
+        let max_suffix = sw
+            .tabs
+            .iter()
+            .filter_map(|t| t.partition.as_deref())
+            .filter_map(partition_suffix)
+            .max()
+            .unwrap_or(0);
+        let state = app.state::<AppState>();
+        let mut strip = state.strip.lock().unwrap();
+        if let Some(entry) = strip.get_mut(&label) {
+            entry.tab_seq = entry.tab_seq.max(max_suffix);
+        }
     }
     // Select the saved active tab.
     let active_label = {
@@ -1094,5 +1121,20 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
         for tab in &entry.tabs {
             crate::session::forget_navigated(app, &tab.label);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::partition_suffix;
+
+    #[test]
+    fn parses_partition_suffix() {
+        // restore advances tab_seq past these so new tabs can't reuse a live jar.
+        assert_eq!(partition_suffix("tab-1-3"), Some(3));
+        assert_eq!(partition_suffix("tab-2-17"), Some(17));
+        assert_eq!(partition_suffix("tab-10-0"), Some(0));
+        assert_eq!(partition_suffix("garbage"), None);
+        assert_eq!(partition_suffix(""), None);
     }
 }

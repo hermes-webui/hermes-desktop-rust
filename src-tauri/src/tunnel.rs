@@ -105,6 +105,10 @@ pub fn start(app: &AppHandle, user: &str, host: &str, local_port: u32, remote_po
 
     // Readiness: a local TCP connect only proves ssh holds the port — only an
     // HTTP round-trip proves the forward is usable end to end (Swift comment).
+    // Use http_ready (not http_reachable) so a reverse proxy on the remote side
+    // answering 502/503/504 while its upstream boots doesn't count as up — same
+    // gateway-error gate as direct mode, so a tunneled restore waits for the
+    // real server too (issue #28).
     let probe_url = format!("http://127.0.0.1:{local_port}/");
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut connected = false;
@@ -112,7 +116,7 @@ pub fn start(app: &AppHandle, user: &str, host: &str, local_port: u32, remote_po
         if !child_alive(app) {
             break;
         }
-        if health::http_reachable(&probe_url, Duration::from_millis(1500)) {
+        if health::http_ready(&probe_url, Duration::from_millis(1500)) {
             connected = true;
             break;
         }
