@@ -30,16 +30,51 @@ const PRE_PAINT: &str = r##"
   } catch (e) {}
 "##;
 
-/// S2 — web Notification stub (native notifications replace web ones).
-const NOTIFICATION_STUB: &str = r##"
-  try {
-    if (window.Notification) {
-      Notification.requestPermission = function (cb) {
-        if (cb) cb('denied');
-        return Promise.resolve('denied');
+/// S2 — Web Notifications shim → native OS notifications (issue #32). Tauri's
+/// webviews don't implement the W3C Notification API (absent on WKWebView,
+/// unsurfaced on WebView2/WebKitGTK), so the WebUI's `new Notification(...)`
+/// calls — response complete, approval required, clarify needed — silently
+/// no-op. This replaces `window.Notification` with a shim that reports through
+/// the bridge to `tauri-plugin-notification`, so they fire natively with the
+/// WebUI's real title/body. Permission is pre-granted so the WebUI takes its
+/// notification path; the shell still gates on the app's notifications pref.
+/// (Replaces the old stub, which forced permission to "denied".)
+const NOTIFICATION_SHIM: &str = r##"
+  (function () {
+    try {
+      function HermesNotification(title, opts) {
+        opts = opts || {};
+        try {
+          EMIT('notify', {
+            title: String(title == null ? 'Hermes' : title),
+            body: String(opts.body || '')
+          });
+        } catch (e) {}
+        this.title = title;
+        this.body = opts.body || '';
+        this.onclick = null;
+        this.onclose = null;
+        this.onerror = null;
+        this.onshow = null;
+      }
+      HermesNotification.permission = 'granted';
+      HermesNotification.requestPermission = function (cb) {
+        if (typeof cb === 'function') cb('granted');
+        return Promise.resolve('granted');
       };
-    }
-  } catch (e) {}
+      HermesNotification.prototype.close = function () {};
+      HermesNotification.prototype.addEventListener = function () {};
+      HermesNotification.prototype.removeEventListener = function () {};
+      HermesNotification.prototype.dispatchEvent = function () { return false; };
+      try {
+        Object.defineProperty(window, 'Notification', {
+          value: HermesNotification, writable: true, configurable: true
+        });
+      } catch (e) {
+        window.Notification = HermesNotification;
+      }
+    } catch (e) {}
+  })();
 "##;
 
 /// S3 — Web Speech suppression → webui falls back to MediaRecorder + /api/transcribe.
@@ -198,36 +233,11 @@ const THEME_BRIDGE: &str = r##"
   })();
 "##;
 
-/// S4 — response-ready notifier: characterData-only mutations, ≥20 chars,
-/// 3s settle, fires only while hidden.
-const NOTIFY_WATCHER: &str = r##"
-  (function () {
-    var startObs = function () {
-      if (!document.body) return;
-      let debounceTimer = null;
-      let totalCharsAdded = 0;
-      const MIN_CHARS = 20;
-      const observer = new MutationObserver((mutations) => {
-        let chars = 0;
-        for (const m of mutations) {
-          if (m.type === 'characterData') chars += (m.target.nodeValue || '').length;
-        }
-        if (chars === 0) return;
-        totalCharsAdded += chars;
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          if (document.hidden && totalCharsAdded >= MIN_CHARS) {
-            EMIT('notify', { title: 'Hermes', body: 'Your response is ready' });
-          }
-          totalCharsAdded = 0;
-        }, 3000);
-      });
-      observer.observe(document.body, { subtree: true, characterData: true });
-    };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startObs);
-    else startObs();
-  })();
-"##;
+// S4 — the old DOM-mutation "response is ready" heuristic was removed in favor
+// of the Notification shim (issue #32): the WebUI now fires precise native
+// notifications (response complete / approval / clarify) through window.
+// Notification → EMIT('notify'), so the crude ≥20-chars-while-hidden watcher
+// would only double-fire. (Removed; the shim is the single notification path.)
 
 /// S11 — window.open / target=_blank: same-origin navigates, external opens
 /// in the system browser (parity-plus; the Swift app drops these silently).
@@ -431,9 +441,41 @@ const DOWNLOAD_BRIDGE: &str = r##"
   }, true);
 "##;
 
+/// S14 — route reporter (issue #30): report the page's live `location.href`
+/// (including client-side `pushState`/hash routes) to the shell so session
+/// restore can reopen the exact deep-linked session, not just the root. wry's
+/// `url()` doesn't reliably reflect SPA history changes on every engine
+/// (notably WebView2), so the page reports the URL itself, debounced to fire
+/// only when it actually changes.
+const ROUTE_REPORTER: &str = r##"
+  (function () {
+    var last = '';
+    var report = function () {
+      try {
+        var h = location.href;
+        if (h && h !== last) { last = h; EMIT('route', h); }
+      } catch (e) {}
+    };
+    var wrap = function (name) {
+      try {
+        var orig = history[name];
+        if (typeof orig === 'function') {
+          history[name] = function () { var r = orig.apply(this, arguments); report(); return r; };
+        }
+      } catch (e) {}
+    };
+    wrap('pushState'); wrap('replaceState');
+    window.addEventListener('popstate', report);
+    window.addEventListener('hashchange', report);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report);
+    else report();
+    setInterval(report, 2000);
+  })();
+"##;
+
 /// Assemble the per-window initialization script.
 pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
-    let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_STUB, SPEECH_SUPPRESS];
+    let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_SHIM, SPEECH_SUPPRESS];
     if cfg!(any(target_os = "macos", target_os = "linux")) {
         parts.push(PASTE_SUPPRESS);
     }
@@ -444,7 +486,7 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
         parts.push(SHORTCUT_FORWARDER);
     }
     parts.push(THEME_BRIDGE);
-    parts.push(NOTIFY_WATCHER);
+    parts.push(ROUTE_REPORTER);
     parts.push(WINDOW_OPEN);
     parts.push(FIND_BAR);
     if cfg!(any(target_os = "macos", target_os = "linux")) {
@@ -488,6 +530,20 @@ pub fn install(app: &AppHandle) {
             "theme" => {
                 if let Some(css) = payload["value"].as_str() {
                     handle_theme_report(&handle, css);
+                }
+            }
+            // Live URL incl. SPA routes (issue #30) — the authoritative per-tab
+            // URL for session restore. Also a fast signal that the page
+            // navigated (profile/session switch), so re-read the profile dot
+            // now instead of waiting for the periodic sweep (issue #31).
+            "route" => {
+                if let Some(u) = payload["value"].as_str() {
+                    crate::session::report_url(&handle, &label, u);
+                }
+                if crate::strip::enabled() && label.starts_with("tab-") {
+                    let app = handle.clone();
+                    let tab = label.clone();
+                    std::thread::spawn(move || crate::strip::recapture_tab_profile(&app, &tab));
                 }
             }
             "notify" => {

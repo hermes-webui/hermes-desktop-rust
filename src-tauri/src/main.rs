@@ -142,13 +142,21 @@ fn new_window_cmd(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn strip_menu(app: tauri::AppHandle, window: String) {
-    use tauri::menu::ContextMenu;
-    let Some(win) = app.windows().get(&window).cloned() else {
-        return;
-    };
-    if let Ok(menu) = menu::build_strip_menu(&app) {
-        let _ = menu.popup(win);
-    }
+    // Pop the "⋯" menu on the MAIN event-loop thread, not inline in this IPC
+    // command (issue #33). On Windows `Menu::popup` enters a modal
+    // `TrackPopupMenu` loop; running it from the IPC command thread wedges the
+    // WebView2 message pump → the menu sticks, the window gets stuck topmost,
+    // and Preferences/Quit stop firing (AppHangB1). Marshaled onto the event
+    // loop, the modal loop pumps normally and the command returns immediately.
+    let _ = app.clone().run_on_main_thread(move || {
+        use tauri::menu::ContextMenu;
+        let Some(win) = app.windows().get(&window).cloned() else {
+            return;
+        };
+        if let Ok(menu) = menu::build_strip_menu(&app) {
+            let _ = menu.popup(win);
+        }
+    });
 }
 
 #[tauri::command]

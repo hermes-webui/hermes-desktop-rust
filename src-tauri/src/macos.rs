@@ -191,15 +191,20 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
             let Some(member) = by_ptr.get(ptr) else {
                 continue;
             };
-            // Only read the live URL once the window has committed a real
-            // navigation — url() on a not-yet-navigated WKWebView unwraps a nil
-            // NSURL and panics (poisoning a runtime mutex → SIGABRT).
-            let url = if crate::session::has_navigated(app, member.label()) {
-                crate::session::capture_url(|| member.url())
-            } else {
-                None
-            }
-            .unwrap_or_else(|| target.clone());
+            // Prefer the page-reported live URL (captures SPA routes, #30); fall
+            // back to wry's url() only once navigated (it panics on a
+            // not-yet-navigated WKWebView, poisoning a runtime mutex → SIGABRT),
+            // then to root.
+            let url = crate::session::reported_url(app, member.label())
+                .filter(|u| !u.starts_with("about:"))
+                .or_else(|| {
+                    if crate::session::has_navigated(app, member.label()) {
+                        crate::session::capture_url(|| member.url())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| target.clone());
             if Some(i) == selected {
                 active = tabs.len();
             }

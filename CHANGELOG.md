@@ -1,5 +1,40 @@
 # Changelog
 
+## [v0.6.0] — 2026-06-18
+
+A bug-squash release: a Windows hang blocker, plus restore/notification/profile-dot fixes.
+
+### Fixed
+
+- **Windows: clicking the "⋯" overflow menu no longer hangs the app** (issue #33).
+  The menu was popped synchronously inside the IPC command; on Windows that
+  modal `TrackPopupMenu` loop wedged the WebView2 message pump (AppHangB1) — the
+  menu stuck, the window got stuck always-on-top, and Preferences/Quit stopped
+  working, forcing a kill from Task Manager. The popup now runs on the main
+  event loop so its modal loop pumps normally and the command returns at once.
+- **Reopened tabs come back on the session they were on, not a blank page**
+  (issue #30). Restore replayed the root URL, so each tab returned fresh
+  (session, title, and profile dot all gone). The page now reports its live URL
+  — including in-app (SPA) navigation that `WebView2`/`WKWebView` don't expose
+  through the wrapper — so restore reopens the exact deep-linked session.
+- **The per-tab profile dot updates right after you switch profile** (issue #31,
+  follow-on to #26). The dot is now re-read the moment the page navigates (a
+  profile/session switch), so it paints correctly on a freshly created tab
+  without needing to open another tab, and no longer adopts a sibling tab's
+  color after a session switch.
+
+### Changed
+
+- **Browser notifications now fire as native OS notifications** (issue #32).
+  The embedded webview doesn't implement the Web Notifications API, so the
+  WebUI's notifications (response complete, approval required, clarification
+  needed) silently did nothing. The app now bridges `window.Notification` to
+  native notifications, so they appear in Notification Center / the Windows
+  action center / the Linux notification tray. Honors the app's notifications
+  preference. (Replaces the old DOM-heuristic "response is ready" guess with the
+  WebUI's real, specific notifications.)
+
+
 ## [v0.5.0] — 2026-06-17
 
 A bug-squash release focused on things that worked worse than the web, plus tab
