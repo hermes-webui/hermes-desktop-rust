@@ -148,6 +148,13 @@ fn strip_menu(app: tauri::AppHandle, window: String) {
     // WebView2 message pump → the menu sticks, the window gets stuck topmost,
     // and Preferences/Quit stop firing (AppHangB1). Marshaled onto the event
     // loop, the modal loop pumps normally and the command returns immediately.
+    //
+    // `run_on_main_thread` (not the GCD `dispatch_main_async` of invariant #12)
+    // is fine because the strip — and thus this command — is Windows/Linux only
+    // (macOS uses native tabs; it's reachable on macOS only via the dev
+    // HERMES_FORCE_STRIP). A context-menu popup doesn't force a window redraw
+    // the way addTabbedWindow does, so there's no draw_rect re-entrancy here. If
+    // the strip ever ships on macOS, route this popup through dispatch_main_async.
     let _ = app.clone().run_on_main_thread(move || {
         use tauri::menu::ContextMenu;
         let Some(win) = app.windows().get(&window).cloned() else {

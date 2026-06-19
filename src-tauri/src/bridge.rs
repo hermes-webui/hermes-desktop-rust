@@ -73,6 +73,25 @@ const NOTIFICATION_SHIM: &str = r##"
       } catch (e) {
         window.Notification = HermesNotification;
       }
+      // The WebUI prefers ServiceWorkerRegistration.showNotification when a SW
+      // is active and only falls back to `new Notification` if that REJECTS.
+      // In an embedded webview the SW path can resolve but display nothing,
+      // swallowing the notification before it reaches the shim above. Route it
+      // through the bridge too so SW-first notifications still fire natively.
+      try {
+        if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype) {
+          ServiceWorkerRegistration.prototype.showNotification = function (title, opts) {
+            opts = opts || {};
+            try {
+              EMIT('notify', {
+                title: String(title == null ? 'Hermes' : title),
+                body: String(opts.body || '')
+              });
+            } catch (e) {}
+            return Promise.resolve();
+          };
+        }
+      } catch (e) {}
     } catch (e) {}
   })();
 "##;
