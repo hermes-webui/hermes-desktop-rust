@@ -153,6 +153,7 @@ pub fn forget(app: &AppHandle, label: &str) {
     state.raw_titles.lock().unwrap().remove(label);
     state.window_profiles.lock().unwrap().remove(label);
     crate::session::forget_navigated(app, label);
+    crate::session::forget_url(app, label);
 }
 
 /// Open a new browser window (a "tab" on macOS when as_tab and a window

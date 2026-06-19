@@ -256,6 +256,38 @@ pub fn forget_navigated(app: &AppHandle, label: &str) {
         .remove(label);
 }
 
+/// Record the page's live URL reported by the injected route reporter (#30).
+/// Ignores `about:`/non-http so a pre-seed blank never overwrites a real route.
+pub fn report_url(app: &AppHandle, label: &str, url: &str) {
+    if !url.starts_with("http") {
+        return;
+    }
+    app.state::<AppState>()
+        .tab_urls
+        .lock()
+        .unwrap()
+        .insert(label.to_string(), url.to_string());
+}
+
+/// The page-reported live URL for `label`, if any (the deep session route).
+pub fn reported_url(app: &AppHandle, label: &str) -> Option<String> {
+    app.state::<AppState>()
+        .tab_urls
+        .lock()
+        .unwrap()
+        .get(label)
+        .cloned()
+}
+
+/// Drop a closed webview/window from the reported-URL map.
+pub fn forget_url(app: &AppHandle, label: &str) {
+    app.state::<AppState>()
+        .tab_urls
+        .lock()
+        .unwrap()
+        .remove(label);
+}
+
 /// Read a webview's current URL, tolerating the engine not having set one yet.
 /// wry's `url()` unwraps the native URL (nil for a freshly-created, not-yet-
 /// navigated webview) and panics — and capture can race a just-opened tab — so

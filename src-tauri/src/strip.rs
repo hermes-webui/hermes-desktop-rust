@@ -706,6 +706,7 @@ pub fn close_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     };
     state.raw_titles.lock().unwrap().remove(tab_label);
     crate::session::forget_navigated(app, tab_label);
+    crate::session::forget_url(app, tab_label);
     if let Some(wv) = find_webview(&win, tab_label) {
         let _ = wv.close();
     }
@@ -795,16 +796,20 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
         let tabs: Vec<SessionTab> = tabs_meta
             .iter()
             .map(|t| {
-                // Only read the live URL once the tab has committed a real
-                // navigation — url() on a not-yet-navigated webview panics on
-                // macOS (and poisons a runtime mutex). Otherwise fall back.
-                let url = if crate::session::has_navigated(app, &t.label) {
-                    find_webview(&win, &t.label)
-                        .and_then(|wv| crate::session::capture_url(|| wv.url()))
-                } else {
-                    None
-                }
-                .unwrap_or_else(|| p.target_url.clone());
+                // Prefer the page-reported live URL (captures SPA routes, #30).
+                // Fall back to wry's url() only once the tab has navigated (it
+                // panics on a not-yet-navigated webview on macOS), then to root.
+                let url = crate::session::reported_url(app, &t.label)
+                    .filter(|u| !u.starts_with("about:"))
+                    .or_else(|| {
+                        if crate::session::has_navigated(app, &t.label) {
+                            find_webview(&win, &t.label)
+                                .and_then(|wv| crate::session::capture_url(|| wv.url()))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| p.target_url.clone());
                 SessionTab {
                     url,
                     profile: t.profile.clone(),
@@ -1013,6 +1018,16 @@ pub fn recapture_profiles(app: &AppHandle) {
     }
 }
 
+/// Re-read one tab's profile immediately. Called from the route reporter
+/// (issue #31): a profile/session switch navigates the page, so re-capturing on
+/// the route change repaints the dot at once — without waiting for the periodic
+/// sweep or needing another tab to open. Caller must be off the main thread.
+pub fn recapture_tab_profile(app: &AppHandle, tab_label: &str) {
+    if let Some(window_label) = window_of_tab(tab_label) {
+        capture_tab_profile(app, &window_label, tab_label);
+    }
+}
+
 /// Move a tab to a new index within its window's strip (drag-to-reorder, #19).
 /// The visible webview is unchanged — only the display order and the stored
 /// `Vec` order move; `active` keeps pointing at the same tab label.
@@ -1120,6 +1135,7 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
         }
         for tab in &entry.tabs {
             crate::session::forget_navigated(app, &tab.label);
+            crate::session::forget_url(app, &tab.label);
         }
     }
 }

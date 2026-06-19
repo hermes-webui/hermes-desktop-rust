@@ -67,6 +67,12 @@ pub struct AppState {
     pub window_modes: Mutex<HashMap<String, String>>,
     /// label -> last raw document.title reported by the title-watcher script.
     pub raw_titles: Mutex<HashMap<String, String>>,
+    /// label -> the page's live `location.href`, reported by the injected route
+    /// reporter. This is the authoritative per-tab URL for session restore
+    /// (issue #30): wry's `url()` doesn't reliably reflect client-side
+    /// `pushState` routing (notably WebView2), so the page reports it directly
+    /// and capture prefers this over `url()`.
+    pub tab_urls: Mutex<HashMap<String, String>>,
     /// label -> (tab_bar_visible, fullscreen) — last chrome state pushed into
     /// the page (hermes-mac-tabbed class, --traffic-light-width). macOS only.
     pub ui_state: Mutex<HashMap<String, (bool, bool)>>,
@@ -117,6 +123,7 @@ impl AppState {
             healthy: AtomicBool::new(true),
             window_modes: Mutex::new(HashMap::new()),
             raw_titles: Mutex::new(HashMap::new()),
+            tab_urls: Mutex::new(HashMap::new()),
             ui_state: Mutex::new(HashMap::new()),
             strip: Mutex::new(HashMap::new()),
             window_profiles: Mutex::new(HashMap::new()),
