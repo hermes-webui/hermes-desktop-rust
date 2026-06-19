@@ -1,5 +1,33 @@
 # Changelog
 
+## [v0.6.1] — 2026-06-19
+
+A crash-and-bug-fix release.
+
+### Fixed
+
+- **The "⋯" overflow menu no longer hangs the app on Windows** (issue #33,
+  follow-up to v0.6.0). v0.6.0 moved the popup onto the event loop, but the hang
+  persisted: testers still saw the app freeze ~2-3 seconds after opening the
+  menu — the window stuck on top of everything, Preferences/Quit dead, only a
+  Task Manager kill recovered it. The popup runs a native modal loop that owns
+  the main thread until dismissed; meanwhile background work that reads a tab's
+  cookie or URL marshals back onto the main thread, and that re-entry while the
+  modal loop is up deadlocked the UI — independent of which item you hovered or
+  selected, matching the "it's a time thing" report. Every such read — the
+  periodic 4-second autosave + profile-dot refresh, **and** the
+  navigation-driven profile re-read and page-load capture — now pauses while a
+  menu is open and resumes the moment it closes, so the menu stays responsive.
+- **A restored tab no longer shows "Session not available in web UI." on
+  launch** (issue #37, new in v0.6.0's deep-session restore). Behind a reverse
+  proxy the restored session's first load could 404 before the server was ready
+  to resolve it, leaving the tab on the empty-state until you switched away and
+  back. A restored tab that gets bounced to the home screen now retries its
+  saved session once, a couple seconds later — mirroring that switch-away-and-back
+  recovery — so the session you left off in comes back on its own. (If a tab
+  still lands on the empty-state behind a slow proxy, a manual reload or session
+  switch recovers it.)
+
 ## [v0.6.0] — 2026-06-18
 
 A bug-squash release: a Windows hang blocker, plus restore/notification/profile-dot fixes.

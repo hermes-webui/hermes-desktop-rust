@@ -302,6 +302,9 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
             } else {
                 Vec::new()
             };
+        // Arm the boot-404 retry (#37) only for a deep (non-root) session URL;
+        // a root restore has nothing to recover.
+        let restore_retry = (!matches!(url.path(), "" | "/")).then(|| url.clone());
         add_tab_with(
             app,
             &label,
@@ -311,6 +314,7 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
                 partition_override: tab.partition.clone(),
                 profile_hint: tab.profile.clone(),
                 custom_title: tab.custom_title.clone(),
+                restore_retry,
             },
         );
     }
@@ -430,6 +434,7 @@ pub fn add_tab(app: &AppHandle, window_label: &str) {
             partition_override: None,
             profile_hint: None,
             custom_title: None,
+            restore_retry: None,
         },
     );
 }
@@ -447,6 +452,12 @@ pub(crate) struct TabSpec {
     pub profile_hint: Option<String>,
     /// Restored user-given tab name (issue #7).
     pub custom_title: Option<String>,
+    /// Set (to the saved deep-link URL) for a RESTORED tab on a non-root
+    /// session. If the boot load bounces to root — the WebUI's self-heal when
+    /// `GET /api/session` 404s transiently behind a proxy (issue #37) — the tab
+    /// re-navigates here once, mirroring the user's switch-away-and-back
+    /// recovery. None for normal new tabs and root restores.
+    pub restore_retry: Option<url::Url>,
 }
 
 /// Shared tab-creation body: build an isolated content webview, append it to
@@ -459,6 +470,7 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
         partition_override,
         profile_hint,
         custom_title,
+        restore_retry,
     } = spec;
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
@@ -623,6 +635,38 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);
     crate::session::persist(app);
+
+    // Boot-time session-restore retry (issue #37): a restored deep-link tab can
+    // 404 on its first `GET /api/session` behind a proxy (server/session index
+    // not ready yet), and the WebUI self-heals by bouncing the URL to root and
+    // showing "Session not available". The session IS reachable a beat later
+    // (the user's switch-away-and-back recovery proves it). So once, ~2.5s after
+    // create, if the tab has bounced to root, re-navigate to the saved deep URL.
+    // No-op if it loaded fine (route still deep) → no penalty on success.
+    if let Some(deep) = restore_retry {
+        let app2 = app.clone();
+        let wv2 = webview.clone();
+        let tab2 = tab_label.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let bounced = crate::session::reported_url(&app2, &tab2)
+                .as_deref()
+                .map(url_is_root)
+                .unwrap_or(false);
+            if bounced {
+                log::info!("strip: restored tab {tab2} bounced to root — retrying {deep}");
+                let _ = wv2.navigate(deep);
+            }
+        });
+    }
+}
+
+/// Whether a reported URL is the WebUI root (path `/` or empty) — the shape the
+/// WebUI bounces a tab to when a boot-time deep-link session load 404s (#37).
+fn url_is_root(u: &str) -> bool {
+    url::Url::parse(u)
+        .map(|p| matches!(p.path(), "" | "/"))
+        .unwrap_or(false)
 }
 
 pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
@@ -964,6 +1008,22 @@ pub fn profile_from_cookies(cookies: &[Cookie<'static>]) -> Option<String> {
 /// session (#18). Runs on a worker thread — the cookie read marshals via the
 /// dispatcher, so it must not be called from inside a wry callout (wry#583).
 fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
+    // Guard the cookie read at the CHOKEPOINT, not just at the periodic sweep
+    // (#33). `wv.cookies()` is a synchronous WebView2 read that marshals onto —
+    // and pumps a nested loop on — the main thread. While the strip's "⋯" popup
+    // owns the main thread (TrackPopupMenu modal loop), that re-entry deadlocks
+    // the UI. recapture_profiles guards itself, but capture_tab_profile is ALSO
+    // reached from the `route` bridge handler (recapture_tab_profile, fired by a
+    // background SSE-driven navigation) and on_page_load — both unguarded
+    // otherwise. Guarding here covers every caller; the value is re-read on the
+    // next route/sweep once the menu closes.
+    if app
+        .state::<AppState>()
+        .menu_open
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
     };
@@ -1005,6 +1065,18 @@ fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
 /// WebUI signal. `capture_tab_profile` only emits when a value actually
 /// changed, so this is cheap. Runs on a worker thread (cookie reads marshal).
 pub fn recapture_profiles(app: &AppHandle) {
+    // Cookie reads marshal into each webview via the runtime dispatcher. If a
+    // native menu modal loop is up (the strip's "⋯" popup), that marshal would
+    // re-enter the main thread from inside the popup's modal loop on Windows and
+    // deadlock the UI (#33). Skip while a menu is open — the periodic sweep
+    // recovers on the next tick once it closes.
+    if app
+        .state::<AppState>()
+        .menu_open
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     let pairs: Vec<(String, String)> = {
         let state = app.state::<AppState>();
         let strip = state.strip.lock().unwrap();

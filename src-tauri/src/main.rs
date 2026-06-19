@@ -155,12 +155,34 @@ fn strip_menu(app: tauri::AppHandle, window: String) {
     // HERMES_FORCE_STRIP). A context-menu popup doesn't force a window redraw
     // the way addTabbedWindow does, so there's no draw_rect re-entrancy here. If
     // the strip ever ships on macOS, route this popup through dispatch_main_async.
+    //
+    // Marshaling the popup onto the event loop (above) was NOT enough to fix #33
+    // on its own: `popup` still runs a nested `TrackPopupMenu` modal loop that
+    // owns the main thread until dismissed, and the periodic 4s autosave +
+    // profile-dot timer reads each tab's cookie/URL (which marshal back onto the
+    // main thread) — that re-entry during the modal loop is the actual deadlock
+    // (b3nw on v0.6.0: "2-3 seconds after the 3 dots is open, doesn't matter
+    // what you hover/select"). Flag `menu_open` for the duration so the timer
+    // skips its webview reads while the menu is up and catches up once it closes.
     let _ = app.clone().run_on_main_thread(move || {
+        use std::sync::atomic::Ordering;
         use tauri::menu::ContextMenu;
         let Some(win) = app.windows().get(&window).cloned() else {
             return;
         };
         if let Ok(menu) = menu::build_strip_menu(&app) {
+            let state = app.state::<AppState>();
+            state.menu_open.store(true, Ordering::SeqCst);
+            // Reset on scope exit, even if `popup` were to panic — a stuck
+            // `menu_open` would silently freeze session autosave + the profile
+            // dot until restart. (`popup` returns a Result we already ignore.)
+            struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Reset<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _reset = Reset(&state.menu_open);
             let _ = menu.popup(win);
         }
     });
@@ -323,6 +345,21 @@ fn main() {
                 let sess_handle = handle.clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(4));
+                    // Skip this tick's webview work while a native menu modal
+                    // loop is up (the strip's "⋯" popup). Both `persist` (reads
+                    // each tab's URL) and `recapture_profiles` (reads each tab's
+                    // cookie) marshal into the webviews via the runtime
+                    // dispatcher; on Windows that would re-enter the main thread
+                    // from inside the popup's `TrackPopupMenu` modal loop and
+                    // deadlock the UI (#33). The next tick (once the menu closes)
+                    // catches up — both are idempotent and only act on a change.
+                    if sess_handle
+                        .state::<AppState>()
+                        .menu_open
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        continue;
+                    }
                     session::persist(&sess_handle);
                     if strip::enabled() {
                         strip::recapture_profiles(&sess_handle);
