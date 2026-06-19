@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.6.1] — 2026-06-19
+
+### Fixed
+
+- **The "⋯" overflow menu no longer hangs the app on Windows** (issue #33,
+  follow-up to v0.6.0). v0.6.0 moved the popup onto the event loop, but the hang
+  persisted: testers still saw the app freeze ~2-3 seconds after opening the
+  menu — the window stuck on top of everything, Preferences/Quit dead, only a
+  Task Manager kill recovered it. The popup runs a native modal loop that owns
+  the main thread until dismissed; meanwhile a periodic 4-second timer (session
+  autosave + the per-tab profile-dot refresh) reads each tab's cookie/URL, and
+  those reads marshal back onto the main thread. With the menu's modal loop
+  already holding the main thread, that re-entry deadlocked the UI — independent
+  of which item you hovered or selected, exactly matching the "it's a time thing"
+  report. The timer now skips its webview reads while a menu is open and catches
+  up on the next tick once it closes, so the menu stays responsive.
+
 ## [v0.6.0] — 2026-06-18
 
 A bug-squash release: a Windows hang blocker, plus restore/notification/profile-dot fixes.

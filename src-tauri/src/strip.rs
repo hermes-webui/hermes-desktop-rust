@@ -1005,6 +1005,18 @@ fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
 /// WebUI signal. `capture_tab_profile` only emits when a value actually
 /// changed, so this is cheap. Runs on a worker thread (cookie reads marshal).
 pub fn recapture_profiles(app: &AppHandle) {
+    // Cookie reads marshal into each webview via the runtime dispatcher. If a
+    // native menu modal loop is up (the strip's "⋯" popup), that marshal would
+    // re-enter the main thread from inside the popup's modal loop on Windows and
+    // deadlock the UI (#33). Skip while a menu is open — the periodic sweep
+    // recovers on the next tick once it closes.
+    if app
+        .state::<AppState>()
+        .menu_open
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     let pairs: Vec<(String, String)> = {
         let state = app.state::<AppState>();
         let strip = state.strip.lock().unwrap();
