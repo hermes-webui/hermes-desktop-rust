@@ -1,12 +1,10 @@
 # Changelog
 
-## [v0.6.2] — 2026-06-19
+## [v0.6.3] — 2026-06-19
 
-A bug-squash release centered on the Windows session-restore failures that
-earlier releases only appeared to fix — they were validated on the macOS
-forced-strip harness, which doesn't reproduce WebView2's cookie behavior, so
-they shipped still broken on Windows. This release traces and fixes the actual
-root cause.
+A bug-squash release: the Windows session-restore failures fixed at the real
+root cause, plus universal per-tab profile color dots. (Rolls up the v0.6.2 tag,
+which was never published — these changes ship together here.)
 
 ### Fixed
 
@@ -26,14 +24,6 @@ root cause.
   login and drafts still ride along in the reused data folder; only the profile
   selector is restored. (macOS was unaffected — its webview keeps the in-memory
   cookie for the life of the app.)
-- **Windows/Linux: the per-tab profile dot is now correct on launch and never
-  shows for the default profile** (issue #31, follow-on to v0.6.0). The dot was
-  driven by the profile *cookie*, which the WebUI sets only on an explicit
-  switch — so a tab that simply *started* on a named profile showed no dot, while
-  a tab switched back to the default profile (or a renamed root profile) showed a
-  spurious one. Each tab's page now reports its actual active profile and that
-  drives the dot directly: it appears on the starting profile, and the default
-  profile correctly shows nothing.
 - **Windows/Linux: renaming a tab no longer has the edit box vanish as you type**
   (issue #38). Double-clicking a tab opens an inline rename field, but the active
   tab's title changes constantly while a chat streams, and each change rebuilt the
@@ -46,6 +36,19 @@ root cause.
   restore it. Hiding it now shows an OS notification with the shortcut, and keeps
   reminding you on each hide until you've successfully brought the bar back at
   least once (so the hint isn't wasted if the notification was suppressed).
+
+### Changed
+
+- **Every tab shows a profile color dot — the default profile included**
+  (issues #8 / #31). The dot used to be driven by the profile *cookie*, which the
+  WebUI sets only on an explicit switch — so a tab that simply *started* on a
+  named profile showed no dot, and the default profile never showed one at all.
+  Now every profile maps to its own stable color, default and named alike: each
+  tab carries its current profile's dot, all tabs on the same profile share one
+  color, and switching a tab's profile recolors it. Reopened tabs come back on
+  the profile (and session) you left them on, with the colors reloaded. Driven by
+  the page's reported active profile (`/api/profile/active`), authoritative for
+  the default profile too, so it's reliable rather than guessed from a cookie.
 
 ## [v0.6.1] — 2026-06-19
 

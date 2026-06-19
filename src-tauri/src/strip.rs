@@ -682,18 +682,12 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
             title,
             attention: false,
             profile: seed_profile.clone(),
-            // Seed the dot from the profile we know at creation so a non-default
-            // tab shows it instantly (and degrades gracefully on a server too
-            // old to expose /api/profile/active); the page's active-profile
-            // reporter refines it after load (issue #31). Filter the literal
-            // "default": the WebUI persists `hermes_profile=default` on an
-            // explicit switch-to-default, but the default profile must show NO
-            // dot — the reporter (is_default) would blank it anyway, this just
-            // avoids the flash. `profile` keeps the raw value for re-seeding.
-            dot_profile: seed_profile
-                .as_deref()
-                .filter(|v| *v != "default")
-                .map(str::to_string),
+            // Seed the dot from the profile we know at creation so a tab with a
+            // cookie shows its color instantly; the page's active-profile
+            // reporter sets/refines it after load — including for the DEFAULT
+            // profile, which now gets its own colored dot like any other
+            // (issue #8/#31, v0.6.3). No filter: every profile shows a color.
+            dot_profile: seed_profile,
             partition: partition_id,
             custom_title,
         });
