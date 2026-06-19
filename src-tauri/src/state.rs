@@ -104,6 +104,16 @@ pub struct AppState {
     pub stderr_tail: Mutex<Vec<String>>,
     /// Human-readable reason for the last connection failure.
     pub last_error_hint: Mutex<String>,
+    /// True while a NATIVE menu modal loop is up (the strip's "⋯" popup —
+    /// `Menu::popup`). On Windows that popup runs a nested `TrackPopupMenu`
+    /// message loop ON THE MAIN THREAD; any background work that marshals back
+    /// into a webview (cookie/URL getters via the runtime dispatcher) would
+    /// re-enter the main thread from inside that modal loop, which WebView2
+    /// forbids → the UI thread deadlocks (AppHangB1: frozen menu, window stuck
+    /// topmost, Preferences/Quit dead). The periodic autosave + profile-dot
+    /// sweep checks this and skips its webview marshals while a menu is open,
+    /// catching up on the next tick once it closes (issue #33).
+    pub menu_open: AtomicBool,
 }
 
 impl AppState {
@@ -129,6 +139,7 @@ impl AppState {
             tunnel_status: Mutex::new(TunnelStatus::Disconnected),
             stderr_tail: Mutex::new(Vec::new()),
             last_error_hint: Mutex::new(String::new()),
+            menu_open: AtomicBool::new(false),
         }
     }
 }

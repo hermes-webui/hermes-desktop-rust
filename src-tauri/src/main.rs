@@ -142,13 +142,29 @@ fn new_window_cmd(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn strip_menu(app: tauri::AppHandle, window: String) {
+    use std::sync::atomic::Ordering;
     use tauri::menu::ContextMenu;
     let Some(win) = app.windows().get(&window).cloned() else {
         return;
     };
-    if let Ok(menu) = menu::build_strip_menu(&app) {
-        let _ = menu.popup(win);
-    }
+    let Ok(menu) = menu::build_strip_menu(&app) else {
+        return;
+    };
+    // This sync command runs on the MAIN THREAD, so `popup` correctly drives the
+    // native modal loop (Windows `TrackPopupMenu`) here. The hang (issue #33)
+    // wasn't the popup itself — the menu opens fine — it was the periodic
+    // autosave + profile-dot timer firing ~2-3s later and marshaling into the
+    // webviews (cookie/URL getters) WHILE this modal loop owns the main thread:
+    // that re-enters the main thread from inside the modal loop, which WebView2
+    // forbids → AppHangB1 (frozen menu, window stuck topmost, Preferences/Quit
+    // dead). Flag `menu_open` for the duration so that worker tick skips its
+    // webview work and catches up on the next tick once the menu closes.
+    // `popup` blocks until the menu is dismissed on Windows; on macOS/Linux it
+    // returns immediately, so the flag is naturally short-lived there.
+    let state = app.state::<AppState>();
+    state.menu_open.store(true, Ordering::SeqCst);
+    let _ = menu.popup(win);
+    state.menu_open.store(false, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -308,6 +324,21 @@ fn main() {
                 let sess_handle = handle.clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(4));
+                    // Skip this tick's webview work while a native menu modal
+                    // loop is up (the strip's "⋯" popup). Both `persist` (reads
+                    // each tab's URL) and `recapture_profiles` (reads each tab's
+                    // cookie) marshal into the webviews via the runtime
+                    // dispatcher; on Windows that would re-enter the main thread
+                    // from inside the popup's `TrackPopupMenu` modal loop and
+                    // deadlock the UI (issue #33). The next tick (after the menu
+                    // closes) catches up — both are idempotent and only act on a
+                    // real change.
+                    {
+                        let state = sess_handle.state::<AppState>();
+                        if state.menu_open.load(std::sync::atomic::Ordering::SeqCst) {
+                            continue;
+                        }
+                    }
                     session::persist(&sess_handle);
                     if strip::enabled() {
                         strip::recapture_profiles(&sess_handle);

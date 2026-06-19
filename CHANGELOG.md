@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.6.0] — 2026-06-18
+
+A focused fix for a Windows hang when opening the tab strip's "⋯" menu.
+
+### Fixed
+
+- **The "⋯" overflow menu no longer hangs the app on Windows** (issue #33). A
+  few seconds after opening the strip's "⋯" menu the app would freeze: the menu
+  became unresponsive, the window got stuck on top of everything else, and
+  Preferences/Quit stopped working — you had to kill it from Task Manager
+  (Windows logged it as `AppHangB1`). The native menu runs a modal loop on the
+  main thread; meanwhile a periodic 4-second timer (session autosave + the
+  per-tab profile-dot refresh) reads each tab's cookie/URL, and those reads
+  marshal back onto the main thread. With the menu's modal loop already holding
+  the main thread, that re-entry deadlocked the UI. The timer now skips its
+  webview reads while a menu is open and catches up on the next tick once it
+  closes, so the menu stays responsive and nothing freezes.
+
 ## [v0.5.0] — 2026-06-17
 
 A bug-squash release focused on things that worked worse than the web, plus tab
