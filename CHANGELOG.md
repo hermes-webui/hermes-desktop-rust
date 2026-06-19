@@ -1,5 +1,52 @@
 # Changelog
 
+## [v0.6.2] — 2026-06-19
+
+A bug-squash release centered on the Windows session-restore failures that
+earlier releases only appeared to fix — they were validated on the macOS
+forced-strip harness, which doesn't reproduce WebView2's cookie behavior, so
+they shipped still broken on Windows. This release traces and fixes the actual
+root cause.
+
+### Fixed
+
+- **Windows: a restored tab now reopens on the right profile and its real
+  session, instead of bouncing to the home screen with "Session not available in
+  web UI."** (issues #30 and #37 — one root cause; #30 was marked fixed in v0.6.0
+  and #37 in v0.6.1, but both kept happening on Windows). The profile selector
+  (`hermes_profile`) is a *session* cookie, and WebView2 discards session cookies
+  from a tab's on-disk data folder when the app restarts. So a restored tab —
+  even though it reuses its data folder to keep you logged in — came back on the
+  *default* profile, and its saved `/session/<id>` link is profile-scoped, so the
+  server returned it as not-found and the tab bounced to the home screen. The app
+  now re-establishes the saved profile on restore by re-seeding that one cookie
+  before the tab loads, pinned to the server's host so WebView2 actually sends it
+  — a cookie set without an explicit host is silently dropped there, which is why
+  the earlier attempt looked right in testing yet did nothing on Windows. Your
+  login and drafts still ride along in the reused data folder; only the profile
+  selector is restored. (macOS was unaffected — its webview keeps the in-memory
+  cookie for the life of the app.)
+- **Windows/Linux: the per-tab profile dot is now correct on launch and never
+  shows for the default profile** (issue #31, follow-on to v0.6.0). The dot was
+  driven by the profile *cookie*, which the WebUI sets only on an explicit
+  switch — so a tab that simply *started* on a named profile showed no dot, while
+  a tab switched back to the default profile (or a renamed root profile) showed a
+  spurious one. Each tab's page now reports its actual active profile and that
+  drives the dot directly: it appears on the starting profile, and the default
+  profile correctly shows nothing.
+- **Windows/Linux: renaming a tab no longer has the edit box vanish as you type**
+  (issue #38). Double-clicking a tab opens an inline rename field, but the active
+  tab's title changes constantly while a chat streams, and each change rebuilt the
+  tab strip — destroying the open field mid-keystroke. The strip now rebuilds only
+  when something it actually shows has changed, and never while a rename is in
+  progress, so the field stays put until you press Enter or Escape.
+- **Windows: hiding the tab bar now tells you how to bring it back** (issue #10).
+  Hiding the bar (the "⋯" menu or Ctrl+Shift+B) also hides the "⋯" button — the
+  only on-screen control — leaving first-time users with no way to discover how to
+  restore it. Hiding it now shows an OS notification with the shortcut, and keeps
+  reminding you on each hide until you've successfully brought the bar back at
+  least once (so the hint isn't wasted if the notification was suppressed).
+
 ## [v0.6.1] — 2026-06-19
 
 A crash-and-bug-fix release.

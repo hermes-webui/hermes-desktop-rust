@@ -188,6 +188,9 @@
       let healthy = true;
       let dragFrom = -1; // index of the tab being dragged (#19)
       let dragLabel = ""; // label of the tab being dragged
+      let renaming = false; // a rename input is open (#38) — suppress rebuilds
+      let renamingLabel = null; // the tab label being renamed (#38)
+      let lastSnapshot = null; // most recent tabs snapshot, to re-apply after edit
 
       // Stable-ish color for a profile name → its dot (issue #8). The default
       // profile (no cookie) gets no dot.
@@ -206,6 +209,8 @@
       // Inline tab rename (issue #7): swap the title span for an input.
       function startRename(el, titleSpan, tabLabel, current) {
         if (el.querySelector("input.rename")) return;
+        renaming = true; // suppress strip rebuilds until the edit ends (#38)
+        renamingLabel = tabLabel;
         const input = document.createElement("input");
         input.className = "rename";
         input.value = current;
@@ -216,6 +221,8 @@
         const finish = (save) => {
           if (done) return;
           done = true;
+          renaming = false;
+          renamingLabel = null;
           if (save) {
             // Empty/whitespace clears the custom name (backend reverts to title).
             hermes.invoke("tab_rename", {
@@ -223,10 +230,12 @@
               tab: tabLabel,
               name: input.value,
             });
-            // backend emits tabs-changed → renderTabs rebuilds the strip.
-          } else {
-            hermes.invoke("tabs_snapshot", { window: WIN }).then(renderTabs);
+            // backend emits tabs-changed → renderTabs rebuilds with the new name.
           }
+          // Re-apply the latest snapshot now so the input is replaced at once
+          // (and any snapshot that arrived while editing is reflected). On save,
+          // the backend's tabs-changed then repaints the new name.
+          if (lastSnapshot) renderTabs(lastSnapshot);
         };
         input.addEventListener("keydown", (e) => {
           e.stopPropagation();
@@ -245,6 +254,21 @@
 
       function renderTabs(snapshot) {
         if (snapshot.window !== WIN) return;
+        lastSnapshot = snapshot;
+        // Don't rebuild the strip while a rename input is open (issue #38): the
+        // active tab's document-title churn fires `tabs-changed` every couple
+        // seconds, and a rebuild (`root.textContent = ""`) would destroy the
+        // freshly-opened <input> — "appears then vanishes instantly" on Windows.
+        // The edit re-applies the latest snapshot when it finishes.
+        //
+        // Exception: if the tab being renamed is no longer in the snapshot (it
+        // was closed mid-edit), release the rename and fall through to rebuild
+        // — otherwise the orphaned <input> would linger on a now-gone tab.
+        if (renaming && document.querySelector("#tabs input.rename")) {
+          if (snapshot.tabs.some((t) => t.label === renamingLabel)) return;
+          renaming = false;
+          renamingLabel = null;
+        }
         const root = document.getElementById("tabs");
         root.textContent = "";
         snapshot.tabs.forEach((tab, i) => {
@@ -255,7 +279,17 @@
             (tab.attention ? " attention" : "");
           el.draggable = true;
           el.dataset.index = i;
-          const profLabel = tab.profile ? " · profile: " + tab.profile : "";
+          // The dot is driven solely by the page-reported active-profile name
+          // (#31), which is authoritative: it shows the dot on the starting
+          // profile too, and correctly shows NO dot for the default profile —
+          // even a renamed root, or a tab carrying an explicit
+          // `hermes_profile=default` cookie. (We deliberately do NOT fall back
+          // to `tab.profile`, the cookie value: that resurrects a spurious dot
+          // for the default profile. `tab.profile` is kept only for restore
+          // re-seeding.) On Win/Linux the reporter always runs, so the dot is
+          // populated within a load; this code path never runs on macOS.
+          const prof = tab.dot_profile;
+          const profLabel = prof ? " · profile: " + prof : "";
           el.title =
             (tab.attention
               ? (tab.title || "New Tab") + " — waiting for you"
@@ -265,11 +299,11 @@
             dot.className = "attn";
             dot.setAttribute("aria-label", "waiting for you");
             el.appendChild(dot);
-          } else if (tab.profile) {
+          } else if (prof) {
             const pf = document.createElement("span");
             pf.className = "pf";
-            pf.style.background = profileColor(tab.profile);
-            pf.setAttribute("aria-label", "profile: " + tab.profile);
+            pf.style.background = profileColor(prof);
+            pf.setAttribute("aria-label", "profile: " + prof);
             el.appendChild(pf);
           }
           const t = document.createElement("span");

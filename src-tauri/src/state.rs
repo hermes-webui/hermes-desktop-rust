@@ -28,6 +28,15 @@ pub struct TabEntry {
     /// per-tab profile dot (issue #8) and is persisted so a restored tab
     /// reopens on the same profile (issue #18).
     pub profile: Option<String>,
+    /// The active profile NAME reported by the page (`/api/profile/active`),
+    /// used to render the dot (issue #31). The WebUI sets the `hermes_profile`
+    /// cookie only on an explicit switch (never on boot), so `profile` above is
+    /// empty for a tab sitting on its starting profile → no dot. The page knows
+    /// the name regardless, so it reports it; the frontend prefers this for the
+    /// dot. Display-only (the canonical name, consistent across auth/no-auth) —
+    /// `profile` (the cookie value) remains the source for restore re-seeding.
+    /// Transient: re-derived by the reporter on every launch, not persisted.
+    pub dot_profile: Option<String>,
     /// The on-disk data-partition directory name backing this tab's cookie jar
     /// (Windows/Linux). Normally the tab label, but a tab restored from a saved
     /// session reuses its *previous* partition so login + cookies survive the

@@ -88,15 +88,44 @@ pub fn toggle_strip(app: &AppHandle, window_label: &str) {
         log::info!("strip: tab-bar toggle unavailable on Linux (GTK child-webview geometry)");
         return;
     }
-    {
+    let now_hidden = {
         let state = app.state::<AppState>();
         let mut strip = state.strip.lock().unwrap();
         let Some(entry) = strip.get_mut(window_label) else {
             return;
         };
         entry.strip_hidden = !entry.strip_hidden;
-    }
+        entry.strip_hidden
+    };
     layout(app, window_label);
+    // Discoverability (issue #10): hiding the strip removes the ⋯ button — the
+    // only visible affordance — so until the user has proven they know how to
+    // bring it back, surface an OS notification with the shortcut every time
+    // they hide it.
+    //
+    // We retire the hint on the UN-HIDE transition, NOT on hide. Un-hiding (on
+    // Windows, the only platform this runs on for real) REQUIRES Ctrl+Shift+B
+    // since the ⋯ button is gone — so a successful un-hide is positive proof
+    // the user learned the shortcut, and only then do we stop hinting. Gating
+    // on the hide instead (the previous logic) burned the one-time flag even
+    // when the toast was silently dropped — Focus Assist / Do-Not-Disturb,
+    // notifications disabled for the app, or an unpackaged dev build — leaving
+    // a first-time hider permanently stuck with the hint already "spent". This
+    // way the hint simply re-fires on the next hide until it actually lands.
+    if now_hidden {
+        if !prefs::hide_hint_shown(app) {
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app
+                .notification()
+                .builder()
+                .title("Tab bar hidden")
+                .body("Press Ctrl+Shift+B to show it again.")
+                .show();
+        }
+    } else if !prefs::hide_hint_shown(app) {
+        // Just un-hid → they know the shortcut now. Stop hinting.
+        prefs::set_hide_hint_shown(app);
+    }
 }
 
 /// Per-tab webview data partition path. Each tab gets its own directory → its
@@ -290,18 +319,41 @@ pub fn restore_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
                 Err(_) => continue,
             },
         };
-        // With a saved partition, REUSE the on-disk jar (login + cookies persist,
-        // issue #28) — no seed needed. Without one (pre-0.5.0 blob / macOS),
-        // fall back to a fresh jar re-seeded with the profile selector (#18).
-        let seed: Vec<Cookie<'static>> =
-            if tab.partition.is_none() && cfg!(not(target_os = "macos")) {
-                tab.profile
-                    .as_deref()
-                    .map(|v| vec![crate::session::profile_cookie(v)])
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+        // ALWAYS re-seed the profile cookie for a restored tab (issue #30/#37),
+        // even when reusing the partition. `hermes_profile` is a SESSION cookie
+        // (no expiry), and WebView2 discards session cookies from the
+        // data_directory on process restart — so reusing the jar does NOT bring
+        // the profile back on Windows: the tab boots on the default profile, and
+        // its saved `/session/<id>` deep-link is then profile-gated to a 404
+        // ("Session not available", #37), bouncing to root (#30). Re-seeding the
+        // captured profile selector re-establishes it deterministically instead
+        // of relying on cookie persistence. The partition is still REUSED
+        // (login/localStorage survive); we only add back the one selector
+        // cookie. (macOS strip = HERMES_FORCE_STRIP dev only, no data_directory,
+        // so seeding is a no-op there.)
+        let seed: Vec<Cookie<'static>> = if cfg!(not(target_os = "macos")) {
+            tab.profile
+                .as_deref()
+                .map(|v| {
+                    let mut c = crate::session::profile_cookie(v);
+                    // CRITICAL (#30/#37): pin the cookie to the navigation host.
+                    // wry's `set_cookie` carries no URL, so on WebView2 a
+                    // domain-less cookie becomes `CreateCookie(.., domain="")`
+                    // — which has no host to match and is SILENTLY never sent,
+                    // leaving the restored tab on the default profile (the bug).
+                    // Setting the domain to the target host (host-only-
+                    // equivalent for localhost) is what actually makes the
+                    // re-seed take effect on Windows. macOS native restore keeps
+                    // the domain-less form WKWebView accepts (windows.rs).
+                    if let Some(h) = url.host_str() {
+                        c.set_domain(h.to_string());
+                    }
+                    vec![c]
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Arm the boot-404 retry (#37) only for a deep (non-root) session URL;
         // a root restore has nothing to recover.
         let restore_retry = (!matches!(url.path(), "" | "/")).then(|| url.clone());
@@ -520,8 +572,13 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
     // (issue #8).
     let seed_profile = profile_hint.or_else(|| profile_from_cookies(&seed));
 
-    // Seed only a FRESH isolated jar; a reused jar already carries its cookies.
-    let do_seed = partition.is_some() && !reuse && !seed.is_empty();
+    // Seed whenever we have cookies to inject into an isolated jar — INCLUDING a
+    // reused jar (issue #30/#37): the reused jar may have lost the session-scoped
+    // `hermes_profile` cookie across restart (WebView2 drops session cookies), so
+    // a restored tab must re-seed its profile selector before navigating, or its
+    // deep-link load 404s under the wrong profile. set_cookie only adds/updates
+    // that one cookie; the rest of the reused jar (login/localStorage) is intact.
+    let do_seed = partition.is_some() && !seed.is_empty();
     // about:blank first ONLY when seeding (so the cookie lands before the real
     // navigation); reused / un-isolated tabs load the target directly.
     let initial_url = if do_seed {
@@ -624,7 +681,19 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
             label: tab_label.clone(),
             title,
             attention: false,
-            profile: seed_profile,
+            profile: seed_profile.clone(),
+            // Seed the dot from the profile we know at creation so a non-default
+            // tab shows it instantly (and degrades gracefully on a server too
+            // old to expose /api/profile/active); the page's active-profile
+            // reporter refines it after load (issue #31). Filter the literal
+            // "default": the WebUI persists `hermes_profile=default` on an
+            // explicit switch-to-default, but the default profile must show NO
+            // dot — the reporter (is_default) would blank it anyway, this just
+            // avoids the flash. `profile` keeps the raw value for re-seeding.
+            dot_profile: seed_profile
+                .as_deref()
+                .filter(|v| *v != "default")
+                .map(str::to_string),
             partition: partition_id,
             custom_title,
         });
@@ -939,24 +1008,68 @@ pub fn set_tab_title(app: &AppHandle, tab_label: &str, title: &str, attention: b
         .lock()
         .unwrap()
         .insert(tab_label.to_string(), title.to_string());
-    {
+    let changed = {
         let mut strip = state.strip.lock().unwrap();
-        if let Some(entry) = strip.get_mut(&window_label) {
-            if let Some(tab) = entry.tabs.iter_mut().find(|t| t.label == tab_label) {
+        match strip
+            .get_mut(&window_label)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.label == tab_label))
+        {
+            Some(tab) => {
                 let p = prefs::load(app);
                 // A user-renamed tab (#7) keeps its name regardless of the page
                 // title; the page title is still recorded (raw_titles above) so
                 // clearing the rename can fall back to it.
-                if tab.custom_title.is_none() {
-                    tab.title =
-                        windows::display_title(title, &p.connection_mode, &p.target_url, true);
-                }
+                let new_title = if tab.custom_title.is_none() {
+                    windows::display_title(title, &p.connection_mode, &p.target_url, true)
+                } else {
+                    tab.title.clone()
+                };
+                let changed = tab.title != new_title || tab.attention != attention;
+                tab.title = new_title;
                 tab.attention = attention;
+                changed
             }
+            None => false,
         }
+    };
+    // Emit only when something the strip renders actually changed — the WebUI
+    // mutates document.title constantly (token streaming), and emitting on every
+    // one floods the strip with rebuilds (it destroyed the open rename input,
+    // #38, and is needless churn). refresh_window_title is cheap/idempotent.
+    if changed {
+        emit_tabs(app, &window_label);
+        refresh_window_title(app, &window_label);
     }
-    emit_tabs(app, &window_label);
-    refresh_window_title(app, &window_label);
+}
+
+/// Set a tab's display profile name for the dot (issue #31), reported by the
+/// page's active-profile reporter. Independent of the `hermes_profile` cookie
+/// (which the WebUI doesn't set until an explicit switch), so a tab on its
+/// starting profile still gets a dot. Empty name = default profile = no dot.
+/// Emits only on change. No webview read here (just a string from the bridge),
+/// so it's safe regardless of the menu modal loop (#33).
+pub fn set_tab_dot_profile(app: &AppHandle, tab_label: &str, name: &str) {
+    let Some(window_label) = window_of_tab(tab_label) else {
+        return;
+    };
+    let value = (!name.is_empty()).then(|| name.to_string());
+    let state = app.state::<AppState>();
+    let changed = {
+        let mut strip = state.strip.lock().unwrap();
+        match strip
+            .get_mut(&window_label)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.label == tab_label))
+        {
+            Some(tab) if tab.dot_profile != value => {
+                tab.dot_profile = value;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        emit_tabs(app, &window_label);
+    }
 }
 
 /// Rename a strip tab (issue #7). `name` = the user's label, or None/empty to
