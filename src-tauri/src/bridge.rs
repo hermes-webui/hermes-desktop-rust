@@ -492,6 +492,35 @@ const ROUTE_REPORTER: &str = r##"
   })();
 "##;
 
+/// S15 — active-profile reporter (issue #31): report the tab's active profile
+/// NAME so the strip can show the profile dot on the STARTING profile, not just
+/// after a switch. The WebUI sets the `hermes_profile` cookie only on an
+/// explicit `/api/profile/switch` — never on boot — so the shell's cookie-based
+/// dot is blank for a tab sitting on its launch profile. The page always knows
+/// the name (`/api/profile/active` → `{name, is_default}`), so it reports it
+/// (empty for the default profile = no dot), debounced to fire only on change.
+const PROFILE_REPORTER: &str = r##"
+  (function () {
+    var last = null;
+    var report = function () {
+      try {
+        fetch('/api/profile/active', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (p) {
+            if (!p) return;
+            var name = p.is_default ? '' : (p.name || '');
+            if (name !== last) { last = name; EMIT('profile', name); }
+          })
+          .catch(function () {});
+      } catch (e) {}
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report);
+    else report();
+    setInterval(report, 3000);
+    window.addEventListener('focus', report);
+  })();
+"##;
+
 /// Assemble the per-window initialization script.
 pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_SHIM, SPEECH_SUPPRESS];
@@ -503,6 +532,9 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     }
     if cfg!(not(target_os = "macos")) {
         parts.push(SHORTCUT_FORWARDER);
+        // Profile dot is strip-only (Windows/Linux); macOS native tabs have no
+        // dot, so skip the reporter's polling there (issue #31).
+        parts.push(PROFILE_REPORTER);
     }
     parts.push(THEME_BRIDGE);
     parts.push(ROUTE_REPORTER);
@@ -563,6 +595,14 @@ pub fn install(app: &AppHandle) {
                     let app = handle.clone();
                     let tab = label.clone();
                     std::thread::spawn(move || crate::strip::recapture_tab_profile(&app, &tab));
+                }
+            }
+            // Active-profile NAME (issue #31) — drives the strip dot even on the
+            // starting profile (where no hermes_profile cookie exists yet).
+            "profile" => {
+                if crate::strip::enabled() && label.starts_with("tab-") {
+                    let name = payload["value"].as_str().unwrap_or("").to_string();
+                    crate::strip::set_tab_dot_profile(&handle, &label, &name);
                 }
             }
             "notify" => {

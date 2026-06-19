@@ -239,3 +239,19 @@ pub fn fullscreen_set(app: &AppHandle, v: bool) {
         let _ = store.save();
     }
 }
+
+// ---- One-time "tab bar hidden" hint (issue #10 discoverability) ----
+
+/// Whether the one-time "Tab bar hidden — Ctrl+Shift+B to show it" hint has
+/// already been shown. Hiding the strip removes the ⋯ button (the only visible
+/// affordance), so a first-time hider needs to learn the un-hide shortcut.
+pub fn hide_hint_shown(app: &AppHandle) -> bool {
+    get_bool(app, "tabBarHideHintShown", false)
+}
+
+pub fn set_hide_hint_shown(app: &AppHandle) {
+    if let Ok(store) = app.store(STORE_FILE) {
+        store.set("tabBarHideHintShown", json!(true));
+        let _ = store.save();
+    }
+}
