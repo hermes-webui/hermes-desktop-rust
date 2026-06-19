@@ -97,6 +97,17 @@ pub fn load(app: &AppHandle) -> Option<Session> {
 /// everywhere must touch the runtime on its own thread) and blocks the caller
 /// for the result — so call it only from a worker thread, never the main one.
 fn capture(app: &AppHandle) -> Session {
+    // Chokepoint guard (#33): capture reads each tab's URL (`webview.url()`), a
+    // synchronous WebView2 read that pumps a nested loop on the main thread.
+    // While the strip's "⋯" popup owns the main thread (TrackPopupMenu modal
+    // loop), that re-entry deadlocks the UI. The 4s timer already skips while
+    // `menu_open`, but guard here too so no `persist` path (or the tiny window
+    // where the timer passed its check just before the menu opened) can slip a
+    // URL read in mid-popup. Returns empty → persist's empty-guard drops it; the
+    // next tick captures once the menu closes.
+    if app.state::<AppState>().menu_open.load(Ordering::SeqCst) {
+        return Session::default();
+    }
     let (tx, rx) = mpsc::channel();
     let app2 = app.clone();
     if app

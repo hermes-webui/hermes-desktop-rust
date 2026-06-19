@@ -173,8 +173,17 @@ fn strip_menu(app: tauri::AppHandle, window: String) {
         if let Ok(menu) = menu::build_strip_menu(&app) {
             let state = app.state::<AppState>();
             state.menu_open.store(true, Ordering::SeqCst);
+            // Reset on scope exit, even if `popup` were to panic — a stuck
+            // `menu_open` would silently freeze session autosave + the profile
+            // dot until restart. (`popup` returns a Result we already ignore.)
+            struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Reset<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _reset = Reset(&state.menu_open);
             let _ = menu.popup(win);
-            state.menu_open.store(false, Ordering::SeqCst);
         }
     });
 }
