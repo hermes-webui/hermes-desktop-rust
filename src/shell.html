@@ -192,8 +192,9 @@
       let renamingLabel = null; // the tab label being renamed (#38)
       let lastSnapshot = null; // most recent tabs snapshot, to re-apply after edit
 
-      // Stable-ish color for a profile name → its dot (issue #8). The default
-      // profile (no cookie) gets no dot.
+      // Stable color for a profile name → its dot (issue #8). Every profile —
+      // the default included (v0.6.3) — maps to its own color, so all tabs on
+      // one profile share a color and distinct profiles get distinct colors.
       function profileColor(name) {
         let h = 0;
         for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
@@ -280,14 +281,14 @@
           el.draggable = true;
           el.dataset.index = i;
           // The dot is driven solely by the page-reported active-profile name
-          // (#31), which is authoritative: it shows the dot on the starting
-          // profile too, and correctly shows NO dot for the default profile —
-          // even a renamed root, or a tab carrying an explicit
-          // `hermes_profile=default` cookie. (We deliberately do NOT fall back
-          // to `tab.profile`, the cookie value: that resurrects a spurious dot
-          // for the default profile. `tab.profile` is kept only for restore
-          // re-seeding.) On Win/Linux the reporter always runs, so the dot is
-          // populated within a load; this code path never runs on macOS.
+          // (#31), which is authoritative: EVERY tab shows a dot colored by its
+          // current profile — the default profile included (v0.6.3) — and it
+          // recolors when the tab's profile changes. (We deliberately do NOT
+          // fall back to `tab.profile`, the cookie value, which is empty for a
+          // tab on its starting profile and so would miss tabs; `tab.profile`
+          // is kept only for restore re-seeding.) On Win/Linux the reporter
+          // always runs, so the dot is populated within a load; this code path
+          // never runs on macOS.
           const prof = tab.dot_profile;
           const profLabel = prof ? " · profile: " + prof : "";
           el.title =

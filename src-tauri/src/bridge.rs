@@ -492,28 +492,44 @@ const ROUTE_REPORTER: &str = r##"
   })();
 "##;
 
-/// S15 — active-profile reporter (issue #31): report the tab's active profile
-/// NAME so the strip can show the profile dot on the STARTING profile, not just
-/// after a switch. The WebUI sets the `hermes_profile` cookie only on an
-/// explicit `/api/profile/switch` — never on boot — so the shell's cookie-based
-/// dot is blank for a tab sitting on its launch profile. The page always knows
-/// the name (`/api/profile/active` → `{name, is_default}`), so it reports it
-/// (empty for the default profile = no dot), debounced to fire only on change.
+/// S15 — active-profile reporter (issue #31; extended for #8 in v0.6.3): report
+/// the tab's active profile NAME so the strip can color the per-tab profile dot.
+/// EVERY profile gets a dot, the DEFAULT profile INCLUDED — each name maps to
+/// its own stable color (`profileColor`), so every tab on one profile shares a
+/// color and three profiles show three colors. The WebUI sets the
+/// `hermes_profile` cookie only on an explicit switch (never on boot), so the
+/// cookie can't drive this; `/api/profile/active` always returns the real
+/// active name (`{name, is_default}` — `name` is non-empty even for the
+/// default / renamed-root profile, via `get_active_profile_name`). Reported on
+/// load, on every client-side navigation (a profile switch routes, so the dot
+/// recolors at once), and on a 3s / focus backstop — debounced to fire only on
+/// change. `no-store` so a switch isn't masked by a cached response.
 const PROFILE_REPORTER: &str = r##"
   (function () {
     var last = null;
     var report = function () {
       try {
-        fetch('/api/profile/active', { credentials: 'same-origin' })
+        fetch('/api/profile/active', { credentials: 'same-origin', cache: 'no-store' })
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (p) {
             if (!p) return;
-            var name = p.is_default ? '' : (p.name || '');
+            var name = p.name || '';
             if (name !== last) { last = name; EMIT('profile', name); }
           })
           .catch(function () {});
       } catch (e) {}
     };
+    var wrap = function (n) {
+      try {
+        var orig = history[n];
+        if (typeof orig === 'function') {
+          history[n] = function () { var r = orig.apply(this, arguments); report(); return r; };
+        }
+      } catch (e) {}
+    };
+    wrap('pushState'); wrap('replaceState');
+    window.addEventListener('popstate', report);
+    window.addEventListener('hashchange', report);
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report);
     else report();
     setInterval(report, 3000);

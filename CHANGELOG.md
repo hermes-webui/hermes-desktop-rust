@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.6.3] — 2026-06-19
+
+A small follow-up to v0.6.2's profile-dot work.
+
+### Changed
+
+- **Every tab shows a profile color dot — the default profile included**
+  (issues #8 / #31). v0.6.2 showed the dot only for non-default profiles, so a
+  tab on the default profile had none. Now every profile maps to its own stable
+  color, default and named alike: each tab carries its current profile's dot,
+  all tabs on the same profile share one color, and switching a tab's profile
+  recolors it immediately. Reopened tabs come back on the profile (and session)
+  you left them on, with the colors reloaded. The dot is driven by the page's
+  reported active profile (`/api/profile/active`), which is authoritative for
+  the default profile too, so it's reliable rather than guessed from a cookie.
+
 ## [v0.6.2] — 2026-06-19
 
 A bug-squash release centered on the Windows session-restore failures that
