@@ -91,6 +91,17 @@ pub struct AppState {
     /// strip stores this per-TabEntry instead). Absent = default profile.
     /// Feeds session capture so a restored native tab reopens on its profile.
     pub window_profiles: Mutex<HashMap<String, String>>,
+    /// macOS only: content-window label -> active profile NAME (non-default),
+    /// reported by the page (`/api/profile/active`). Used to prefix the native
+    /// tab title with the profile so macOS gets a per-tab profile indicator
+    /// (issue #44) — the dot is Win/Linux-strip-only. Absent = default = no
+    /// prefix. Display-only; the cookie-value `window_profiles` above remains
+    /// the source for restore re-seeding.
+    pub window_profile_names: Mutex<HashMap<String, String>>,
+    /// macOS only: set once per launch after the first connect to fire the
+    /// one-time "tabs exist" discoverability hint at most once per run (issue
+    /// #42); the persisted `tabsHintShown` pref is the across-launch gate.
+    pub tabs_hinted: AtomicBool,
     /// Webview/window labels that have committed at least one real (non-`about:`)
     /// navigation. Session capture reads a webview's live URL ONLY for these:
     /// wry's macOS `url()` unwraps a nil `WKWebView.URL` on a not-yet-navigated
@@ -148,6 +159,8 @@ impl AppState {
             ui_state: Mutex::new(HashMap::new()),
             strip: Mutex::new(HashMap::new()),
             window_profiles: Mutex::new(HashMap::new()),
+            window_profile_names: Mutex::new(HashMap::new()),
+            tabs_hinted: AtomicBool::new(false),
             navigated: Mutex::new(HashSet::new()),
             session_restored: AtomicBool::new(false),
             restoring: AtomicBool::new(false),

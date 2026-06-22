@@ -1288,6 +1288,8 @@ pub fn snapshot(app: &AppHandle, window_label: &str) -> serde_json::Value {
             "active": entry.active,
             "mode": p.connection_mode,
             "target": p.target_url,
+            // User color overrides for the profile dots (issue #47).
+            "colors": prefs::profile_colors(app),
         }),
         None => json!({ "window": window_label, "tabs": [], "active": 0 }),
     }
@@ -1295,6 +1297,14 @@ pub fn snapshot(app: &AppHandle, window_label: &str) -> serde_json::Value {
 
 pub fn emit_tabs(app: &AppHandle, window_label: &str) {
     let _ = app.emit("tabs-changed", snapshot(app, window_label));
+}
+
+/// All strip-window labels (issue #47: repaint every window after a profile
+/// color change).
+pub fn window_labels(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let strip = state.strip.lock().unwrap();
+    strip.keys().cloned().collect()
 }
 
 /// Window destroyed: drop its registry entries. NOTE: this does NOT delete the

@@ -152,6 +152,7 @@ pub fn forget(app: &AppHandle, label: &str) {
     state.window_modes.lock().unwrap().remove(label);
     state.raw_titles.lock().unwrap().remove(label);
     state.window_profiles.lock().unwrap().remove(label);
+    state.window_profile_names.lock().unwrap().remove(label);
     crate::session::forget_navigated(app, label);
     crate::session::forget_url(app, label);
 }
@@ -774,7 +775,32 @@ pub fn refresh_title(app: &AppHandle, label: &str) {
         .unwrap_or_else(|| "direct".into());
     let healthy = state.healthy.load(Ordering::SeqCst);
     let target = prefs::load(app).target_url;
-    let _ = w.set_title(&display_title(&raw, &mode, &target, healthy));
+    let base = display_title(&raw, &mode, &target, healthy);
+    // macOS native tabs have no strip dot, so prefix a non-default profile name
+    // onto the tab title as the per-tab profile indicator (issue #44). The
+    // prefix sits OUTSIDE display_title's truncation so it's never cut.
+    let titled = match state.window_profile_names.lock().unwrap().get(label) {
+        Some(name) if !name.is_empty() => format!("{name} · {base}"),
+        _ => base,
+    };
+    let _ = w.set_title(&titled);
+}
+
+/// Set (or clear, on empty) a content window's active profile NAME, used to
+/// prefix the native macOS tab title with a profile indicator (issue #44).
+/// Repaints the title immediately. No-op effect on Win/Linux (those use the
+/// strip dot and never emit `mac-profile`).
+pub fn set_window_profile_name(app: &AppHandle, label: &str, name: &str) {
+    {
+        let state = app.state::<AppState>();
+        let mut names = state.window_profile_names.lock().unwrap();
+        if name.is_empty() {
+            names.remove(label);
+        } else {
+            names.insert(label.to_string(), name.to_string());
+        }
+    }
+    refresh_title(app, label);
 }
 
 /// A content webview reported a new `document.title` via wry's native

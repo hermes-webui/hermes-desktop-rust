@@ -537,6 +537,45 @@ const PROFILE_REPORTER: &str = r##"
   })();
 "##;
 
+/// macOS-only profile reporter (issue #44). macOS uses native tabs with no
+/// strip, so there's nowhere to hang the Win/Linux color dot — surface the
+/// active profile in the native tab TITLE instead. Mirrors `PROFILE_REPORTER`
+/// but reports the name ONLY for a non-default profile (empty = default = clear
+/// the prefix, so single-profile users' titles stay clean). A distinct
+/// `mac-profile` kind keeps the Win/Linux dot's `profile` payload untouched.
+const MACOS_PROFILE_REPORTER: &str = r##"
+  (function () {
+    var last = null;
+    var report = function () {
+      try {
+        fetch('/api/profile/active', { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (p) {
+            if (!p) return;
+            var name = p.is_default ? '' : (p.name || '');
+            if (name !== last) { last = name; EMIT('mac-profile', name); }
+          })
+          .catch(function () {});
+      } catch (e) {}
+    };
+    var wrap = function (n) {
+      try {
+        var orig = history[n];
+        if (typeof orig === 'function') {
+          history[n] = function () { var r = orig.apply(this, arguments); report(); return r; };
+        }
+      } catch (e) {}
+    };
+    wrap('pushState'); wrap('replaceState');
+    window.addEventListener('popstate', report);
+    window.addEventListener('hashchange', report);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report);
+    else report();
+    setInterval(report, 3000);
+    window.addEventListener('focus', report);
+  })();
+"##;
+
 /// Assemble the per-window initialization script.
 pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_SHIM, SPEECH_SUPPRESS];
@@ -545,6 +584,8 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     }
     if cfg!(target_os = "macos") {
         parts.push(MACOS_TITLEBAR);
+        // Surface the active profile in the native tab title (issue #44).
+        parts.push(MACOS_PROFILE_REPORTER);
     }
     if cfg!(not(target_os = "macos")) {
         parts.push(SHORTCUT_FORWARDER);
@@ -619,6 +660,14 @@ pub fn install(app: &AppHandle) {
                 if crate::strip::enabled() && label.starts_with("tab-") {
                     let name = payload["value"].as_str().unwrap_or("").to_string();
                     crate::strip::set_tab_dot_profile(&handle, &label, &name);
+                }
+            }
+            // Active-profile NAME for the macOS native tab title (issue #44).
+            // Non-default name → title prefix; empty → no prefix.
+            "mac-profile" => {
+                if cfg!(target_os = "macos") && label.starts_with("main-") {
+                    let name = payload["value"].as_str().unwrap_or("");
+                    windows::set_window_profile_name(&handle, &label, name);
                 }
             }
             "notify" => {

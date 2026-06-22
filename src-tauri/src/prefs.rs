@@ -255,3 +255,89 @@ pub fn set_hide_hint_shown(app: &AppHandle) {
         let _ = store.save();
     }
 }
+
+// ---- One-time "tabs exist" discoverability hint (issue #42, macOS) ----
+
+/// Whether the one-time "this app has tabs — ⌘T" hint has been retired. On
+/// macOS tabs are a hidden feature (no on-screen affordance; the native tab bar
+/// only appears with 2+ tabs), so a first-time user may never discover them.
+/// Retired once the user actually opens a tab (proof they found the feature) —
+/// NOT when the hint is shown, mirroring the issue-#10 lesson (a dropped
+/// notification must not permanently spend the hint).
+pub fn tabs_hint_shown(app: &AppHandle) -> bool {
+    get_bool(app, "tabsHintShown", false)
+}
+
+pub fn set_tabs_hint_shown(app: &AppHandle) {
+    if let Ok(store) = app.store(STORE_FILE) {
+        store.set("tabsHintShown", json!(true));
+        let _ = store.save();
+    }
+}
+
+// ---- Per-profile dot color overrides (issue #47) ----
+
+/// `true` for a `#rrggbb` hex string. Gates what we persist + later inject into
+/// the strip's `style.background`, so a non-color value can't poison the CSS.
+fn is_hex_color(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// User-chosen dot-color overrides as a JSON object `{ "<profile>": "#rrggbb" }`
+/// (issue #47). The strip's `profileColor` consults this before the auto
+/// palette. `{}` when unset. Sent to the strip in the tabs snapshot.
+pub fn profile_colors(app: &AppHandle) -> serde_json::Value {
+    app.store(STORE_FILE)
+        .ok()
+        .and_then(|s| s.get("profileColors"))
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Set (or clear) one profile's dot color. A valid `#rrggbb` is stored
+/// (lowercased); any other value clears that profile's override (revert to the
+/// auto palette).
+pub fn set_profile_color(app: &AppHandle, name: &str, color: &str) {
+    if name.is_empty() {
+        return;
+    }
+    if let Ok(store) = app.store(STORE_FILE) {
+        let mut map = store
+            .get("profileColors")
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| json!({}));
+        if let Some(obj) = map.as_object_mut() {
+            if is_hex_color(color) {
+                obj.insert(name.to_string(), json!(color.to_lowercase()));
+            } else {
+                obj.remove(name);
+            }
+        }
+        store.set("profileColors", map);
+        let _ = store.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_hex_color;
+
+    #[test]
+    fn hex_color_validation_is_strict() {
+        // The only accepted shape is #rrggbb — this gates what gets injected
+        // into the strip's CSS `style.background` (issue #47).
+        assert!(is_hex_color("#4f9dff"));
+        assert!(is_hex_color("#000000"));
+        assert!(is_hex_color("#FFFFFF"));
+        // Rejected: missing #, wrong length, non-hex, and CSS-injection shapes.
+        assert!(!is_hex_color("4f9dff"));
+        assert!(!is_hex_color("#4f9df"));
+        assert!(!is_hex_color("#4f9dfff"));
+        assert!(!is_hex_color("#12345g"));
+        assert!(!is_hex_color(""));
+        assert!(!is_hex_color("#fff"));
+        assert!(!is_hex_color("red"));
+        assert!(!is_hex_color("#000;}body{x"));
+    }
+}
