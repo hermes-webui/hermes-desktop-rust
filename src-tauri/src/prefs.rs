@@ -288,11 +288,22 @@ fn is_hex_color(s: &str) -> bool {
 /// (issue #47). The strip's `profileColor` consults this before the auto
 /// palette. `{}` when unset. Sent to the strip in the tabs snapshot.
 pub fn profile_colors(app: &AppHandle) -> serde_json::Value {
-    app.store(STORE_FILE)
+    let stored = app
+        .store(STORE_FILE)
         .ok()
-        .and_then(|s| s.get("profileColors"))
-        .filter(|v| v.is_object())
-        .unwrap_or_else(|| json!({}))
+        .and_then(|s| s.get("profileColors"));
+    let Some(serde_json::Value::Object(obj)) = stored else {
+        return json!({});
+    };
+    // Re-validate on read (defense-in-depth): a hand-edited prefs.json could
+    // hold a non-`#rrggbb` value that bypassed `set_profile_color`, and the
+    // strip feeds this straight into `style.background` (issue #47). Drop any
+    // entry that isn't a valid hex color so only safe values ever reach the DOM.
+    let clean: serde_json::Map<String, serde_json::Value> = obj
+        .into_iter()
+        .filter(|(_, v)| v.as_str().map(is_hex_color).unwrap_or(false))
+        .collect();
+    serde_json::Value::Object(clean)
 }
 
 /// Set (or clear) one profile's dot color. A valid `#rrggbb` is stored

@@ -213,6 +213,18 @@
         "#e066c4", // magenta
       ];
 
+      // Recover the profile NAME from a `hermes_profile` cookie value. In
+      // no-auth mode the cookie IS the plain name; in auth mode the WebUI signs
+      // it as `name.<64-hex-hmac>` (sign_profile_cookie_value). Profile names
+      // can't contain "." (server regex ^[a-z0-9][a-z0-9_-]{0,63}$), so a
+      // trailing `.<64 hex>` is unambiguously the signature — strip it so the
+      // dot's color/tooltip and #47 overrides key off the stable NAME, not an
+      // opaque, session-bound token (issue #45 auth-mode follow-up).
+      function profileName(cookieValue) {
+        if (!cookieValue) return "";
+        return cookieValue.replace(/\.[0-9a-f]{64}$/, "");
+      }
+
       // A profile name → its dot color (issues #8/#41/#47). A user-set override
       // (#47) wins; otherwise the name hashes into the curated palette (#41), so
       // the same profile always gets the same color and distinct profiles get
@@ -304,18 +316,20 @@
             (tab.attention ? " attention" : "");
           el.draggable = true;
           el.dataset.index = i;
-          // The tab's current profile, for the dot. Prefer `tab.profile` — the
-          // per-tab `hermes_profile` cookie value, read from that tab's OWN jar
-          // (`capture_tab_profile`) — and fall back to `tab.dot_profile`, the
-          // page-reported active name (`/api/profile/active`), only when the
-          // tab has no cookie yet (a tab still on its starting profile). The
-          // cookie is preferred because it is genuinely PER-TAB and so can't
-          // collapse: after a server update/restart, `/api/profile/active` can
-          // transiently return the process-global profile for EVERY tab, which
-          // made all dots turn one color (#45); the per-tab cookie value is
-          // immune to that. Both still recolor on a profile switch. Empty for
-          // both = no dot. (This whole code path never runs on macOS.)
-          const prof = tab.profile || tab.dot_profile;
+          // The tab's current profile NAME, for the dot. Prefer the per-tab
+          // `hermes_profile` cookie (read from that tab's OWN jar by
+          // `capture_tab_profile`), with its auth signature stripped to the bare
+          // name (`profileName`); fall back to `tab.dot_profile`, the
+          // page-reported active name (`/api/profile/active`), only when the tab
+          // has no cookie yet (still on its starting profile). The cookie is
+          // preferred because it's genuinely PER-TAB and so can't collapse:
+          // after a server update/restart `/api/profile/active` can transiently
+          // return the process-global profile for EVERY tab, which made all dots
+          // turn one color (#45); the per-tab cookie is immune. Using the
+          // NAME (not the raw cookie) keeps color/tooltip/#47-overrides correct
+          // in auth mode, where the cookie is a signed `name.<hmac>` token
+          // (review follow-up). Both recolor on a switch. (Never runs on macOS.)
+          const prof = profileName(tab.profile) || tab.dot_profile;
           const profLabel = prof ? " · profile: " + prof : "";
           el.title =
             (tab.attention
