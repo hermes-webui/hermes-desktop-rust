@@ -152,6 +152,9 @@ fn run(app: &AppHandle) {
             windows::open_browser(app, &p, false);
         }
         windows::set_offline_badge(app, false);
+        // macOS: nudge first-time users that tabs exist (issue #42).
+        #[cfg(target_os = "macos")]
+        maybe_show_tabs_hint(app);
         if p.connection_mode == "direct" {
             start_health_loop(app, p.target_url.clone());
         }
@@ -231,6 +234,30 @@ fn start_recovery_loop(app: &AppHandle, target: String) {
     });
 }
 
+/// One-time macOS "tabs exist" discoverability hint (issue #42). Fires at most
+/// once per launch (atomic guard, so reconnects don't re-fire) and only while
+/// the user hasn't yet opened a tab (`tabs_hint_shown`). Retiring on the user's
+/// first tab — not on show — means a dropped notification (Do Not Disturb /
+/// notifications off / dev build) isn't permanently spent; it re-nudges next
+/// launch. The File ▸ New Tab ⌘T menu item is the always-present fallback.
+#[cfg(target_os = "macos")]
+fn maybe_show_tabs_hint(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.tabs_hinted.swap(true, Ordering::SeqCst) {
+        return; // already nudged this launch
+    }
+    if prefs::tabs_hint_shown(app) {
+        return; // user already found tabs
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title("Hermes WebUI Desktop has tabs")
+        .body("Press ⌘T to open a new tab (also under File ▸ New Tab).")
+        .show();
+}
+
 /// Guarded entry for New Window / New Tab (port of openNewBrowserSession).
 ///
 /// Threading is platform-split:
@@ -246,6 +273,12 @@ fn start_recovery_loop(app: &AppHandle, target: String) {
 pub fn open_new_session(app: &AppHandle, as_tab: bool) {
     let app = app.clone();
     let work = move || {
+        // Opening a tab = the user discovered tabs → retire the macOS hint (#42)
+        // so it never fires again, regardless of whether the toast was seen.
+        #[cfg(target_os = "macos")]
+        if as_tab {
+            prefs::set_tabs_hint_shown(&app);
+        }
         let p = prefs::load(&app);
         if p.connection_mode == "ssh"
             && tunnel::current_status(&app) != crate::state::TunnelStatus::Connected

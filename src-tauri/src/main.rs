@@ -140,6 +140,17 @@ fn new_window_cmd(app: tauri::AppHandle) {
     conn::open_new_session(&app, false);
 }
 
+/// Set a custom color for a profile's dot (issue #47); empty/invalid color
+/// clears the override. Persists to prefs and repaints the strip.
+#[tauri::command]
+fn set_profile_color(app: tauri::AppHandle, name: String, color: String) {
+    prefs::set_profile_color(&app, &name, &color);
+    // Repaint every strip window so the new color shows immediately.
+    for label in strip::window_labels(&app) {
+        strip::emit_tabs(&app, &label);
+    }
+}
+
 #[tauri::command]
 fn strip_menu(app: tauri::AppHandle, window: String) {
     // Pop the "⋯" menu on the MAIN event-loop thread, not inline in this IPC
@@ -270,6 +281,7 @@ fn main() {
             tab_reorder,
             tab_rename,
             new_window_cmd,
+            set_profile_color,
             strip_menu
         ])
         .setup(|app| {

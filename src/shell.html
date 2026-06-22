@@ -191,14 +191,49 @@
       let renaming = false; // a rename input is open (#38) — suppress rebuilds
       let renamingLabel = null; // the tab label being renamed (#38)
       let lastSnapshot = null; // most recent tabs snapshot, to re-apply after edit
+      let profileColors = {}; // user color overrides {profile: "#rrggbb"} (#47)
 
-      // Stable color for a profile name → its dot (issue #8). Every profile —
-      // the default included (v0.6.3) — maps to its own color, so all tabs on
-      // one profile share a color and distinct profiles get distinct colors.
+      // A curated, visually-distinct palette (issue #41). The old hue-hash
+      // (`hash % 360` → hsl) had no minimum spacing, so distinct profiles often
+      // landed a few degrees apart and read as the same color (clustered pinks).
+      // A fixed palette of well-separated, dark-strip-readable colors guarantees
+      // the first N profiles are tellable apart and reuses gracefully after.
+      const PROFILE_PALETTE = [
+        "#4f9dff", // blue
+        "#3ec46d", // green
+        "#ff6b6b", // red
+        "#f7b32b", // amber
+        "#b072ff", // purple
+        "#2bd4d4", // cyan
+        "#ff7eb6", // pink
+        "#a3d62a", // lime
+        "#ff9f45", // orange
+        "#5c7cfa", // indigo
+        "#26a69a", // teal
+        "#e066c4", // magenta
+      ];
+
+      // Recover the profile NAME from a `hermes_profile` cookie value. In
+      // no-auth mode the cookie IS the plain name; in auth mode the WebUI signs
+      // it as `name.<64-hex-hmac>` (sign_profile_cookie_value). Profile names
+      // can't contain "." (server regex ^[a-z0-9][a-z0-9_-]{0,63}$), so a
+      // trailing `.<64 hex>` is unambiguously the signature — strip it so the
+      // dot's color/tooltip and #47 overrides key off the stable NAME, not an
+      // opaque, session-bound token (issue #45 auth-mode follow-up).
+      function profileName(cookieValue) {
+        if (!cookieValue) return "";
+        return cookieValue.replace(/\.[0-9a-f]{64}$/, "");
+      }
+
+      // A profile name → its dot color (issues #8/#41/#47). A user-set override
+      // (#47) wins; otherwise the name hashes into the curated palette (#41), so
+      // the same profile always gets the same color and distinct profiles get
+      // distinct ones. The default profile is just another name with a color.
       function profileColor(name) {
+        if (profileColors && profileColors[name]) return profileColors[name];
         let h = 0;
         for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-        return "hsl(" + (h % 360) + ", 62%, 55%)";
+        return PROFILE_PALETTE[h % PROFILE_PALETTE.length];
       }
 
       function clearDropMarks() {
@@ -256,6 +291,7 @@
       function renderTabs(snapshot) {
         if (snapshot.window !== WIN) return;
         lastSnapshot = snapshot;
+        profileColors = snapshot.colors || {}; // user color overrides (#47)
         // Don't rebuild the strip while a rename input is open (issue #38): the
         // active tab's document-title churn fires `tabs-changed` every couple
         // seconds, and a rebuild (`root.textContent = ""`) would destroy the
@@ -280,16 +316,20 @@
             (tab.attention ? " attention" : "");
           el.draggable = true;
           el.dataset.index = i;
-          // The dot is driven solely by the page-reported active-profile name
-          // (#31), which is authoritative: EVERY tab shows a dot colored by its
-          // current profile — the default profile included (v0.6.3) — and it
-          // recolors when the tab's profile changes. (We deliberately do NOT
-          // fall back to `tab.profile`, the cookie value, which is empty for a
-          // tab on its starting profile and so would miss tabs; `tab.profile`
-          // is kept only for restore re-seeding.) On Win/Linux the reporter
-          // always runs, so the dot is populated within a load; this code path
-          // never runs on macOS.
-          const prof = tab.dot_profile;
+          // The tab's current profile NAME, for the dot. Prefer the per-tab
+          // `hermes_profile` cookie (read from that tab's OWN jar by
+          // `capture_tab_profile`), with its auth signature stripped to the bare
+          // name (`profileName`); fall back to `tab.dot_profile`, the
+          // page-reported active name (`/api/profile/active`), only when the tab
+          // has no cookie yet (still on its starting profile). The cookie is
+          // preferred because it's genuinely PER-TAB and so can't collapse:
+          // after a server update/restart `/api/profile/active` can transiently
+          // return the process-global profile for EVERY tab, which made all dots
+          // turn one color (#45); the per-tab cookie is immune. Using the
+          // NAME (not the raw cookie) keeps color/tooltip/#47-overrides correct
+          // in auth mode, where the cookie is a signed `name.<hmac>` token
+          // (review follow-up). Both recolor on a switch. (Never runs on macOS.)
+          const prof = profileName(tab.profile) || tab.dot_profile;
           const profLabel = prof ? " · profile: " + prof : "";
           el.title =
             (tab.attention
@@ -331,6 +371,27 @@
           el.addEventListener("auxclick", (e) => {
             if (e.button === 1)
               hermes.invoke("tab_close", { window: WIN, tab: tab.label });
+          });
+          // Right-click a tab to set a custom color for its profile (issue #47).
+          // The color is per-PROFILE (not per-tab), so every tab on that profile
+          // recolors. Opens the OS color picker seeded with the current color;
+          // the chosen color is persisted in app prefs over the bridge.
+          el.addEventListener("contextmenu", (e) => {
+            if (!prof) return;
+            e.preventDefault();
+            const picker = document.createElement("input");
+            picker.type = "color";
+            picker.value = profileColor(prof);
+            picker.style.cssText =
+              "position:fixed;left:" + e.clientX + "px;top:" + e.clientY +
+              "px;width:1px;height:1px;opacity:0;border:0;padding:0";
+            document.body.appendChild(picker);
+            picker.addEventListener("change", () => {
+              hermes.invoke("set_profile_color", { name: prof, color: picker.value });
+              picker.remove();
+            });
+            picker.addEventListener("blur", () => picker.remove());
+            picker.click();
           });
 
           // Drag-to-reorder (issue #19).

@@ -1,5 +1,41 @@
 # Changelog
 
+## [v0.6.4] — 2026-06-21
+
+A sweep focused on the per-tab profile dots — distinct, customizable, and
+reliable — plus macOS tab discoverability.
+
+### Added
+
+- **Custom per-profile dot colors** (issue #47). Right-click a tab and pick a
+  color for its profile; every tab on that profile takes it and the choice is
+  remembered. Handy to override the auto-assigned color or to disambiguate two
+  profiles that happen to share one.
+- **macOS: a per-tab profile indicator** (issue #44). macOS uses native tabs
+  (there's no Windows/Linux color-dot strip), so a tab on a non-default profile
+  now shows the profile name as a prefix in its native tab title (e.g.
+  "work · …"); the default profile stays unprefixed.
+- **macOS: a first-run hint that tabs exist** (issue #42). macOS tabs are easy
+  to miss — there's no on-screen "+", and the native tab bar only appears once
+  you have two tabs. The app now shows a one-time notification pointing at ⌘T
+  (also under File ▸ New Tab), and keeps the nudge available until you've opened
+  a tab at least once, so a missed notification isn't wasted.
+
+### Fixed
+
+- **Profile dot colors are now visually distinct** (issue #41). v0.6.3 mapped a
+  hash of the profile name straight onto the hue wheel with no minimum spacing,
+  so different profiles often rendered in near-identical hues (clustered pinks).
+  Colors now come from a curated, well-separated palette, so distinct profiles
+  are tellable apart at a glance (and #47 lets you override any clash).
+- **Profile dots no longer all collapse to one color after a server
+  update/restart** (issue #45, Windows/Linux). The dot was driven solely by the
+  page-reported active profile, which can transiently report the same
+  process-global profile for every tab while the server restarts — turning all
+  dots one color. Each tab's dot is now driven first by its own per-tab profile
+  cookie (genuinely per-tab, so it can't collapse), falling back to the page
+  report only for a tab still on its starting profile.
+
 ## [v0.6.3] — 2026-06-19
 
 A bug-squash release: the Windows session-restore failures fixed at the real
