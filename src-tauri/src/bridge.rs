@@ -537,6 +537,31 @@ const PROFILE_REPORTER: &str = r##"
   })();
 "##;
 
+/// S16 — busy/streaming reporter (issue #46): watch the WebUI's `S.busy` flag —
+/// the same state that drives the web app's in-progress spinner — and report
+/// working/idle over the bridge, so the strip can show a per-tab "working"
+/// glyph (you can see which background tabs have a run in flight). `S` is a
+/// top-level `const` in the WebUI's classic, deferred `ui.js`, reachable as a
+/// free variable from this injected script (same page realm where the
+/// notification shim patches `window.Notification`). Polled at 700ms + on
+/// focus, debounced to emit only on change. The try/catch guards the brief
+/// pre-`ui.js` window where `S` is still in its temporal dead zone.
+const BUSY_REPORTER: &str = r##"
+  (function () {
+    var last = null;
+    var report = function () {
+      try {
+        var b = (typeof S !== 'undefined' && S) ? !!S.busy : false;
+        if (b !== last) { last = b; EMIT('busy', b); }
+      } catch (e) {}
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', report);
+    else report();
+    setInterval(report, 700);
+    window.addEventListener('focus', report);
+  })();
+"##;
+
 /// macOS-only profile reporter (issue #44). macOS uses native tabs with no
 /// strip, so there's nowhere to hang the Win/Linux color dot — surface the
 /// active profile in the native tab TITLE instead. Mirrors `PROFILE_REPORTER`
@@ -589,9 +614,10 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     }
     if cfg!(not(target_os = "macos")) {
         parts.push(SHORTCUT_FORWARDER);
-        // Profile dot is strip-only (Windows/Linux); macOS native tabs have no
-        // dot, so skip the reporter's polling there (issue #31).
+        // Profile dot + working glyph are strip-only (Windows/Linux); macOS
+        // native tabs have no strip, so skip these reporters there (#31, #46).
         parts.push(PROFILE_REPORTER);
+        parts.push(BUSY_REPORTER);
     }
     parts.push(THEME_BRIDGE);
     parts.push(ROUTE_REPORTER);
@@ -660,6 +686,13 @@ pub fn install(app: &AppHandle) {
                 if crate::strip::enabled() && label.starts_with("tab-") {
                     let name = payload["value"].as_str().unwrap_or("").to_string();
                     crate::strip::set_tab_dot_profile(&handle, &label, &name);
+                }
+            }
+            // Tab busy/streaming state for the per-tab "working" glyph (#46).
+            "busy" => {
+                if crate::strip::enabled() && label.starts_with("tab-") {
+                    let busy = payload["value"].as_bool().unwrap_or(false);
+                    crate::strip::set_tab_busy(&handle, &label, busy);
                 }
             }
             // Active-profile NAME for the macOS native tab title (issue #44).

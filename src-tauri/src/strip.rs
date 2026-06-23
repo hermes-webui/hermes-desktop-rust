@@ -688,6 +688,7 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
             label: tab_label.clone(),
             title,
             attention: false,
+            busy: false,
             profile: seed_profile.clone(),
             // Seed the dot from the profile we know at creation so a tab with a
             // cookie shows its color instantly; the page's active-profile
@@ -1063,6 +1064,34 @@ pub fn set_tab_dot_profile(app: &AppHandle, tab_label: &str, name: &str) {
         {
             Some(tab) if tab.dot_profile != value => {
                 tab.dot_profile = value;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        emit_tabs(app, &window_label);
+    }
+}
+
+/// Set a tab's busy (actively-streaming) flag (issue #46), reported by the
+/// page's busy reporter (the WebUI's `S.busy`). Emit-on-change so a streaming
+/// tab — whose `S.busy` is polled, not its constantly-mutating title — doesn't
+/// flood the strip. No webview read (just a bool from the bridge), so it's safe
+/// regardless of the menu modal loop (#33).
+pub fn set_tab_busy(app: &AppHandle, tab_label: &str, busy: bool) {
+    let Some(window_label) = window_of_tab(tab_label) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    let changed = {
+        let mut strip = state.strip.lock().unwrap();
+        match strip
+            .get_mut(&window_label)
+            .and_then(|e| e.tabs.iter_mut().find(|t| t.label == tab_label))
+        {
+            Some(tab) if tab.busy != busy => {
+                tab.busy = busy;
                 true
             }
             _ => false,

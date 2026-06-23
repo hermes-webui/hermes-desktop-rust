@@ -2,7 +2,18 @@
 
 ## [v0.6.5] — 2026-06-22
 
-A bug-fix release for the Windows/Linux tab strip and notification discoverability.
+A bug-fix release for the Windows/Linux tab strip and notification discoverability,
+plus a per-tab "working" indicator.
+
+### Added
+
+- **Windows/Linux: tabs now show a "working" spinner while their session is
+  streaming** (issue #46). A small spinner appears on a tab whose session has a
+  run in flight (mirroring the web app's in-progress spinner), so with several
+  tabs open you can see at a glance which background tabs are busy. Driven by the
+  page's own busy state — the same signal as the in-app spinner — and clears the
+  moment the run finishes (the tab's profile dot / attention badge takes over
+  again).
 
 ### Fixed
 

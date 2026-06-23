@@ -96,6 +96,22 @@
         border-radius: 50%;
         box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
       }
+      /* Per-tab "working" spinner (issue #46): shown while the tab's session is
+         actively streaming, mirroring the web app's in-progress spinner. */
+      .tab .working {
+        flex: none;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        border: 1.5px solid var(--hermes-fg-secondary, #888);
+        border-top-color: transparent;
+        animation: hermes-spin 0.7s linear infinite;
+      }
+      @keyframes hermes-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
       /* Per-profile color popover (issue #49): swatches + custom + reset/close,
          with explicit affordances (the bare native picker had none). */
       .colorpop {
@@ -484,11 +500,22 @@
           // (review follow-up). Both recolor on a switch. (Never runs on macOS.)
           const prof = profileName(tab.profile) || tab.dot_profile;
           const profLabel = prof ? " · profile: " + prof : "";
-          el.title =
-            (tab.attention
-              ? (tab.title || "New Tab") + " — waiting for you"
-              : tab.title || "New Tab") + profLabel;
-          if (tab.attention) {
+          const stateLabel = tab.busy
+            ? " — working"
+            : tab.attention
+              ? " — waiting for you"
+              : "";
+          el.title = (tab.title || "New Tab") + stateLabel + profLabel;
+          // Leading decoration, highest-priority first: a working session shows
+          // a spinner (#46); a blocked one shows the attention badge (#14);
+          // otherwise the per-tab profile dot (#8). A run finishing flips busy
+          // off, so attention/profile take over once it clears.
+          if (tab.busy) {
+            const sp = document.createElement("span");
+            sp.className = "working";
+            sp.setAttribute("aria-label", "working");
+            el.appendChild(sp);
+          } else if (tab.attention) {
             const dot = document.createElement("span");
             dot.className = "attn";
             dot.setAttribute("aria-label", "waiting for you");
