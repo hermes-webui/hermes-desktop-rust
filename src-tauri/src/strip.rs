@@ -229,7 +229,14 @@ fn build_strip_window(
     let strip_label = format!("strip-{n}");
     let init = format!("window.__HERMES_WIN = '{label}';");
     let swb = WebviewBuilder::new(&strip_label, WebviewUrl::App("shell.html".into()))
-        .initialization_script(&init);
+        .initialization_script(&init)
+        // Drag-to-reorder tabs (#19) is HTML5 drag in shell.html. Without this,
+        // wry's native OS drag-drop handler intercepts the gesture and the page
+        // never sees dragstart/drop — so reorder silently no-ops on Windows
+        // (same root cause as #27 for content webviews). The strip hosts only
+        // the tab bar + ⋯ menu; it needs no native file-drop, and window-drag
+        // (data-tauri-drag-region) is a separate mechanism, unaffected.
+        .disable_drag_drop_handler();
     let scale = win.scale_factor().unwrap_or(1.0);
     let logical = win
         .inner_size()

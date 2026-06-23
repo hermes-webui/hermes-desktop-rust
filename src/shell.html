@@ -96,6 +96,73 @@
         border-radius: 50%;
         box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
       }
+      /* Per-profile color popover (issue #49): swatches + custom + reset/close,
+         with explicit affordances (the bare native picker had none). */
+      .colorpop {
+        position: fixed;
+        z-index: 50;
+        width: 176px;
+        padding: 9px;
+        background: var(--hermes-control-bg, #2a2a2a);
+        border: 1px solid var(--hermes-border, #444);
+        border-radius: 8px;
+        box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+        color: var(--hermes-fg, #eee);
+        font-size: 11px;
+      }
+      .colorpop .cp-head {
+        font-weight: 600;
+        margin-bottom: 7px;
+        color: var(--hermes-fg-secondary, #aaa);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .colorpop .cp-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 6px;
+        margin-bottom: 9px;
+      }
+      .colorpop .cp-sw {
+        width: 19px;
+        height: 19px;
+        padding: 0;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        cursor: pointer;
+      }
+      .colorpop .cp-sw.sel {
+        border-color: var(--hermes-fg, #fff);
+      }
+      .colorpop .cp-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .colorpop .cp-custom {
+        flex: none;
+        width: 24px;
+        height: 22px;
+        padding: 0;
+        border: 1px solid var(--hermes-border, #444);
+        border-radius: 5px;
+        background: transparent;
+        cursor: pointer;
+      }
+      .colorpop .cp-btn {
+        flex: 1;
+        padding: 3px 6px;
+        font-size: 11px;
+        border: 1px solid var(--hermes-border, #444);
+        border-radius: 5px;
+        background: var(--hermes-bg, #1a1a1a);
+        color: var(--hermes-fg, #eee);
+        cursor: pointer;
+      }
+      .colorpop .cp-btn:hover {
+        border-color: var(--hermes-accent, #0a84ff);
+      }
       /* Drag-to-reorder (issue #19) */
       .tab.dragging {
         opacity: 0.45;
@@ -236,6 +303,92 @@
         return PROFILE_PALETTE[h % PROFILE_PALETTE.length];
       }
 
+      // Per-profile color popover (issue #49). Replaces the old bare
+      // <input type=color> (which had no obvious confirm/close) with a small
+      // in-strip popover: palette swatches (one-click apply), a custom-color
+      // input, and explicit Reset/Close. All persist via `set_profile_color`
+      // (empty color clears the override → back to the auto palette).
+      function closeColorPopover() {
+        const p = document.querySelector(".colorpop");
+        if (p) p.remove();
+        document.removeEventListener("mousedown", onColorPopDown, true);
+        document.removeEventListener("keydown", onColorPopKey, true);
+      }
+      function onColorPopDown(e) {
+        if (!e.target.closest(".colorpop")) closeColorPopover();
+      }
+      function onColorPopKey(e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeColorPopover();
+        }
+      }
+      function applyProfileColor(prof, color, close) {
+        hermes.invoke("set_profile_color", { name: prof, color: color });
+        if (color) profileColors[prof] = color;
+        else delete profileColors[prof];
+        if (lastSnapshot) renderTabs(lastSnapshot); // instant feedback
+        if (close !== false) closeColorPopover();
+      }
+      function openColorPopover(prof, x, y) {
+        closeColorPopover(); // single instance
+        const current = (profileColor(prof) || "").toLowerCase();
+        const pop = document.createElement("div");
+        pop.className = "colorpop";
+
+        const head = document.createElement("div");
+        head.className = "cp-head";
+        head.textContent = "Color · " + prof;
+        pop.appendChild(head);
+
+        const grid = document.createElement("div");
+        grid.className = "cp-grid";
+        PROFILE_PALETTE.forEach((c) => {
+          const sw = document.createElement("button");
+          sw.className = "cp-sw" + (c.toLowerCase() === current ? " sel" : "");
+          sw.style.background = c;
+          sw.title = c;
+          sw.addEventListener("click", () => applyProfileColor(prof, c));
+          grid.appendChild(sw);
+        });
+        pop.appendChild(grid);
+
+        const row = document.createElement("div");
+        row.className = "cp-row";
+        const custom = document.createElement("input");
+        custom.type = "color";
+        custom.className = "cp-custom";
+        custom.value = current || "#888888";
+        custom.title = "Custom color…";
+        // `change` fires once the OS picker commits (not per drag tick).
+        custom.addEventListener("change", () => applyProfileColor(prof, custom.value));
+        const reset = document.createElement("button");
+        reset.className = "cp-btn";
+        reset.textContent = "Reset";
+        reset.title = "Revert to the automatic color";
+        reset.addEventListener("click", () => applyProfileColor(prof, ""));
+        const close = document.createElement("button");
+        close.className = "cp-btn";
+        close.textContent = "Close";
+        close.addEventListener("click", closeColorPopover);
+        row.appendChild(custom);
+        row.appendChild(reset);
+        row.appendChild(close);
+        pop.appendChild(row);
+
+        document.body.appendChild(pop);
+        // Clamp within the viewport (the strip is short, so prefer below).
+        const w = pop.offsetWidth || 176;
+        const h = pop.offsetHeight || 90;
+        pop.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 6)) + "px";
+        pop.style.top = Math.min(y, window.innerHeight - h - 6) + "px";
+        // Defer listener attach so this same click doesn't immediately close it.
+        setTimeout(() => {
+          document.addEventListener("mousedown", onColorPopDown, true);
+          document.addEventListener("keydown", onColorPopKey, true);
+        }, 0);
+      }
+
       function clearDropMarks() {
         document
           .querySelectorAll(".tab.drop-before, .tab.drop-after")
@@ -373,25 +526,13 @@
               hermes.invoke("tab_close", { window: WIN, tab: tab.label });
           });
           // Right-click a tab to set a custom color for its profile (issue #47).
-          // The color is per-PROFILE (not per-tab), so every tab on that profile
-          // recolors. Opens the OS color picker seeded with the current color;
-          // the chosen color is persisted in app prefs over the bridge.
+          // The color is per-PROFILE, so every tab on that profile recolors.
+          // Opens an in-strip popover with explicit affordances (issue #49): the
+          // bare native picker had no obvious confirm/close.
           el.addEventListener("contextmenu", (e) => {
             if (!prof) return;
             e.preventDefault();
-            const picker = document.createElement("input");
-            picker.type = "color";
-            picker.value = profileColor(prof);
-            picker.style.cssText =
-              "position:fixed;left:" + e.clientX + "px;top:" + e.clientY +
-              "px;width:1px;height:1px;opacity:0;border:0;padding:0";
-            document.body.appendChild(picker);
-            picker.addEventListener("change", () => {
-              hermes.invoke("set_profile_color", { name: prof, color: picker.value });
-              picker.remove();
-            });
-            picker.addEventListener("blur", () => picker.remove());
-            picker.click();
+            openColorPopover(prof, e.clientX, e.clientY);
           });
 
           // Drag-to-reorder (issue #19).

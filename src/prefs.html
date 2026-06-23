@@ -66,6 +66,12 @@
       .checkbox-row input {
         margin-top: 2px;
       }
+      .checkbox-row .hint {
+        display: block;
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--hermes-fg-secondary);
+      }
       hr {
         border: none;
         border-top: 1px solid var(--hermes-border);
@@ -131,12 +137,19 @@
       <label>Target URL</label>
       <input type="text" id="targetURL" placeholder="http://localhost:8787" />
     </div>
+    <div class="section">NOTIFICATIONS</div>
     <div class="checkbox-row">
       <span></span>
       <label>
         <input type="checkbox" id="notifications" />
-        Show a notification when a response completes while the app is in the
-        background
+        <span>
+          Show a native notification when a response completes while the app is
+          in the background.
+          <span class="hint"
+            >Notifications must also be enabled in Hermes WebUI Settings →
+            “Browser notifications” for them to fire.</span
+          >
+        </span>
       </label>
     </div>
     <div class="footer">
