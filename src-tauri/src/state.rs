@@ -22,6 +22,12 @@ pub struct TabEntry {
     /// the strip renders an attention badge so a blocked background tab is
     /// findable without clicking through every tab.
     pub attention: bool,
+    /// This tab's session is actively streaming a response (issue #46). Reported
+    /// by the page's busy reporter watching the WebUI's `S.busy` flag — the same
+    /// state that drives the web app's in-progress spinner — so the strip can
+    /// show a per-tab "working" glyph and you can see which background tabs have
+    /// a run in flight. Transient: re-derived each launch, never persisted.
+    pub busy: bool,
     /// The active WebUI profile for this tab — the value of its per-tab
     /// `hermes_profile` cookie (None = the default profile). Read from the
     /// tab's isolated cookie jar after each real page load. Drives the strip's

@@ -1,5 +1,41 @@
 # Changelog
 
+## [v0.6.5] — 2026-06-22
+
+A bug-fix release for the Windows/Linux tab strip and notification discoverability,
+plus a per-tab "working" indicator.
+
+### Added
+
+- **Windows/Linux: tabs now show a "working" spinner while their session is
+  streaming** (issue #46). A small spinner appears on a tab whose session has a
+  run in flight (mirroring the web app's in-progress spinner), so with several
+  tabs open you can see at a glance which background tabs are busy. Driven by the
+  page's own busy state — the same signal as the in-app spinner — and clears the
+  moment the run finishes (the tab's profile dot / attention badge takes over
+  again).
+
+### Fixed
+
+- **Windows/Linux: dragging a tab now reorders it** (issue #19). The reorder
+  handlers shipped in v0.4.0 but never worked: the tab-strip webview didn't
+  disable wry's native OS drag-drop handler, so it intercepted the gesture and
+  the strip page never received the HTML5 `dragstart`/`drop` events (the same
+  root cause the #27 fix addressed for content webviews). The strip webview now
+  disables the native handler, so drag-to-reorder works. (macOS already reorders
+  via its native tab bar.)
+- **Windows/Linux: the per-profile color picker now has clear controls** (issue
+  #49, follow-up to v0.6.4's #47). Right-clicking a tab previously opened the
+  bare OS color dialog with no obvious way to apply or close it. It now opens a
+  small in-strip popover with one-click palette swatches, a custom-color input,
+  and explicit **Reset** (back to the auto color) and **Close** buttons (also
+  Escape / click-away). The chosen color still persists per profile.
+- **Notifications: the desktop toggle is now easier to find, with a pointer to
+  the second switch** (issue #50). The desktop Preferences notification toggle
+  now sits under its own "NOTIFICATIONS" heading and notes that notifications
+  must *also* be enabled in Hermes WebUI Settings → "Browser notifications" —
+  the WebUI-side gate a user had to discover separately before anything fired.
+
 ## [v0.6.4] — 2026-06-21
 
 A sweep focused on the per-tab profile dots — distinct, customizable, and
