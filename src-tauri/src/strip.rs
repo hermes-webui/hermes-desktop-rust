@@ -749,7 +749,7 @@ fn url_is_root(u: &str) -> bool {
 /// notification gate ONLY (not the SSE-close-on-hidden path), so a background
 /// tab notifies AND keeps streaming. No-op until the page defines it.
 fn set_tab_backgrounded(wv: &Webview<Wry>, backgrounded: bool) {
-    let _ = wv.eval(&format!(
+    let _ = wv.eval(format!(
         "window.__hermesSetBackgrounded&&window.__hermesSetBackgrounded({backgrounded})"
     ));
 }

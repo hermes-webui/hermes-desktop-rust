@@ -546,7 +546,7 @@ fn main() {
                     if strip::enabled() {
                         strip::set_active_tab_backgrounded(app, label, bg);
                     } else if let Some(wv) = app.get_webview_window(label) {
-                        let _ = wv.eval(&format!(
+                        let _ = wv.eval(format!(
                             "window.__hermesSetBackgrounded&&window.__hermesSetBackgrounded({bg})"
                         ));
                     }
