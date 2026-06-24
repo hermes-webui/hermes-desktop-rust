@@ -480,7 +480,7 @@ fn main() {
             // helper queues onto the GCD main queue (invariant #12) and returns
             // at once, so this menu callout never touches AppKit inline.
             #[cfg(target_os = "macos")]
-            "show_all_tabs" => {
+            "show_tab_bar" => {
                 if let Some(w) = windows::focused_or_recent_content(app) {
                     macos::toggle_tab_bar(&w);
                 }

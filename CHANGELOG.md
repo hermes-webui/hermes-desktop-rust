@@ -7,7 +7,7 @@ tab-bar menu, a download save dialog, and a profile-colored working spinner.
 
 ### Added
 
-- **macOS: Window ▸ Show All Tabs (⌃⌘T) summons the native tab bar** even with
+- **macOS: Window ▸ Show Tab Bar (⌃⌘T) summons the native tab bar** even with
   one window open (issue #42). macOS only shows the tab bar once you have two
   tabs, so tabs were easy to miss — this is the Mac-native menu affordance that
   completes the discoverability work begun in v0.6.4 (the first-run ⌘T hint).
