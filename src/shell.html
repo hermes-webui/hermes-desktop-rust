@@ -513,7 +513,14 @@
           if (tab.busy) {
             const sp = document.createElement("span");
             sp.className = "working";
-            sp.setAttribute("aria-label", "working");
+            // Tint the spinner ring with the tab's profile color (#55) so a
+            // working tab still shows *which* profile it's on — the busy glyph
+            // no longer hides the per-profile color while a run is in flight.
+            if (prof) {
+              sp.style.borderColor = profileColor(prof);
+              sp.style.borderTopColor = "transparent";
+            }
+            sp.setAttribute("aria-label", prof ? "working · " + prof : "working");
             el.appendChild(sp);
           } else if (tab.attention) {
             const dot = document.createElement("span");

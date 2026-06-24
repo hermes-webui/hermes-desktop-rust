@@ -1,5 +1,38 @@
 # Changelog
 
+## [v0.6.6] — 2026-06-24
+
+A batch of bug fixes and features: background-tab notifications, a Mac-native
+tab-bar menu, a download save dialog, and a profile-colored working spinner.
+
+### Added
+
+- **macOS: Window ▸ Show Tab Bar (⌃⌘T) summons the native tab bar** even with
+  one window open (issue #42). macOS only shows the tab bar once you have two
+  tabs, so tabs were easy to miss — this is the Mac-native menu affordance that
+  completes the discoverability work begun in v0.6.4 (the first-run ⌘T hint).
+
+### Fixed
+
+- **Background tabs now fire OS notifications** (issue #32, with hermes-webui
+  #4753). A tab that wasn't the visible one never fired its completion/approval
+  notification: the WebUI gates notifications on `document.hidden`, and a hidden
+  tab's webview still reports visible. The shell now tells the page when its tab
+  is backgrounded — on tab switch, and when the whole app loses focus — and the
+  WebUI honors that for notifications only, so a background tab notifies *and*
+  keeps streaming. (Needs a hermes-webui new enough to include the notification
+  hook, v0.51.612+; on older servers it harmlessly no-ops as before.)
+- **A working tab keeps its profile color** (issue #55). v0.6.5's per-tab
+  "working" spinner hid the profile color dot while a run streamed; the spinner
+  is now tinted with the profile's color, so a busy tab still shows which
+  profile it's on.
+- **Workspace-file downloads show a Save dialog and reveal the file** (issue #57,
+  macOS/Linux). Downloads from the workspace tree used to save silently into
+  ~/Downloads with no destination choice or clear feedback. The app now opens a
+  native Save panel (choose the location + name), then notifies on completion
+  and reveals the file in Finder/Files. (Windows already used WebView2's own
+  Save dialog.)
+
 ## [v0.6.5] — 2026-06-22
 
 A bug-fix release for the Windows/Linux tab strip and notification discoverability,

@@ -802,8 +802,10 @@ pub fn install(app: &AppHandle) {
     });
 }
 
-/// Save intercepted download bytes into ~/Downloads with collision-safe
-/// naming, then notify (mac/linux — see DOWNLOAD_BRIDGE).
+/// Save intercepted download bytes (mac/linux — see DOWNLOAD_BRIDGE). Opens a
+/// native Save panel so the user picks the destination + filename (issue #57 —
+/// it used to save silently into ~/Downloads with no picker and no clear
+/// feedback), then writes, notifies, and reveals the file in Finder/Files.
 fn save_download(app: &AppHandle, name: &str, bytes: &[u8]) {
     let safe: String = name
         .chars()
@@ -816,47 +818,49 @@ fn save_download(app: &AppHandle, name: &str, bytes: &[u8]) {
         })
         .collect();
     let safe = safe.trim().trim_start_matches('.');
-    let safe = if safe.is_empty() { "download" } else { safe };
-    let Ok(dir) = app.path().download_dir() else {
-        log::warn!("download: no download dir");
-        return;
-    };
-    let mut target = dir.join(safe);
-    let mut counter = 1;
-    while target.exists() {
-        let stem = std::path::Path::new(safe)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("download");
-        let ext = std::path::Path::new(safe)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|e| format!(".{e}"))
-            .unwrap_or_default();
-        target = dir.join(format!("{stem} ({counter}){ext}"));
-        counter += 1;
-    }
-    match std::fs::write(&target, bytes) {
-        Ok(()) => {
-            log::info!(
-                "download: saved {} ({} bytes)",
-                target.display(),
-                bytes.len()
-            );
-            let shown = target
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(safe)
-                .to_string();
-            let _ = app
-                .notification()
-                .builder()
-                .title("Download complete")
-                .body(format!("Saved {shown} to Downloads"))
-                .show();
+    let safe = if safe.is_empty() { "download" } else { safe }.to_string();
+    let app = app.clone();
+    let bytes = bytes.to_vec();
+    // Off the main thread: blocking_save_file dispatches the panel to the main
+    // thread and blocks the caller, so it must not run on the UI thread.
+    std::thread::spawn(move || {
+        use tauri_plugin_dialog::DialogExt;
+        use tauri_plugin_opener::OpenerExt;
+        let mut builder = app.dialog().file().set_file_name(safe.clone());
+        if let Ok(dir) = app.path().download_dir() {
+            builder = builder.set_directory(dir);
         }
-        Err(e) => log::error!("download: write failed: {e}"),
-    }
+        let Some(target) = builder
+            .blocking_save_file()
+            .and_then(|fp| fp.into_path().ok())
+        else {
+            log::info!("download: save cancelled");
+            return;
+        };
+        match std::fs::write(&target, &bytes) {
+            Ok(()) => {
+                log::info!(
+                    "download: saved {} ({} bytes)",
+                    target.display(),
+                    bytes.len()
+                );
+                let shown = target
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&safe)
+                    .to_string();
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Download complete")
+                    .body(format!("Saved {shown}"))
+                    .show();
+                // Reveal in Finder/Explorer/Files so the user can find it.
+                let _ = app.opener().reveal_item_in_dir(&target);
+            }
+            Err(e) => log::error!("download: write failed: {e}"),
+        }
+    });
 }
 
 /// hermesTheme handler port: parse → luminance → appearance fan-out + persist.

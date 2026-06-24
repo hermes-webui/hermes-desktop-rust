@@ -681,6 +681,7 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
         if let Some(prev) = entry.tabs.get(entry.active) {
             if let Some(prev_wv) = find_webview(&win, &prev.label) {
                 let _ = prev_wv.hide();
+                set_tab_backgrounded(&prev_wv, true); // hidden by the new tab (#32)
             }
         }
         let title = custom_title.clone().unwrap_or_else(|| "New Tab".into());
@@ -740,6 +741,42 @@ fn url_is_root(u: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Tell a tab's page whether it's backgrounded (issue #32). The WebUI gates OS
+/// notifications on `document.hidden`, but a strip tab hidden via `wv.hide()`
+/// still reports visible — so a hidden-but-streaming tab never fired its
+/// completion/approval notification. The WebUI exposes
+/// `window.__hermesSetBackgrounded(bool)` (hermes-webui #4753), which feeds the
+/// notification gate ONLY (not the SSE-close-on-hidden path), so a background
+/// tab notifies AND keeps streaming. No-op until the page defines it.
+fn set_tab_backgrounded(wv: &Webview<Wry>, backgrounded: bool) {
+    let _ = wv.eval(format!(
+        "window.__hermesSetBackgrounded&&window.__hermesSetBackgrounded({backgrounded})"
+    ));
+}
+
+/// Mark a strip window's currently-visible tab backgrounded/foregrounded (#32),
+/// used when the whole window gains/loses OS focus (app switch) — so a run
+/// completing in the active tab while the app is in the background still
+/// notifies. Hidden tabs are already flagged backgrounded by `select_tab`.
+pub fn set_active_tab_backgrounded(app: &AppHandle, window_label: &str, backgrounded: bool) {
+    let Some(win) = app.windows().get(window_label).cloned() else {
+        return;
+    };
+    let active = {
+        let state = app.state::<AppState>();
+        let strip = state.strip.lock().unwrap();
+        strip
+            .get(window_label)
+            .and_then(|e| e.tabs.get(e.active))
+            .map(|t| t.label.clone())
+    };
+    if let Some(label) = active {
+        if let Some(wv) = find_webview(&win, &label) {
+            set_tab_backgrounded(&wv, backgrounded);
+        }
+    }
+}
+
 pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
     let Some(win) = app.windows().get(window_label).cloned() else {
         return;
@@ -764,6 +801,7 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         if prev != tab_label {
             if let Some(wv) = find_webview(&win, &prev) {
                 let _ = wv.hide();
+                set_tab_backgrounded(&wv, true); // now backgrounded (#32)
             }
         }
     }
@@ -778,6 +816,7 @@ pub fn select_tab(app: &AppHandle, window_label: &str, tab_label: &str) {
         }
         let _ = wv.show();
         let _ = wv.set_focus();
+        set_tab_backgrounded(&wv, false); // now foreground (#32)
     }
     emit_tabs(app, window_label);
     refresh_window_title(app, window_label);

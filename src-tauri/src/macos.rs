@@ -85,6 +85,25 @@ pub fn add_tabbed_window(host: &WebviewWindow, new_win: &WebviewWindow) {
     });
 }
 
+/// Toggle the window's native tab bar — the AppKit "Show/Hide Tab Bar" action
+/// (issue #42). For a single-window tab group this is the only way to summon the
+/// bar (NSWindowTabGroup has no `setTabBarVisible:` setter). GCD-deferred like
+/// `add_tabbed_window`: toggling the bar forces a relayout, and a forced display
+/// inside a tao callout self-deadlocks the main thread (invariant #12). The 1s
+/// chrome poller (`windows::refresh_macos_chrome`) re-fits the webview after.
+pub fn toggle_tab_bar(window: &WebviewWindow) {
+    let window = window.clone();
+    dispatch_main_async(move || {
+        if let Ok(ptr) = window.ns_window() {
+            unsafe {
+                let ns: &NSWindow = &*(ptr as *const NSWindow);
+                ns.toggleTabBar(None);
+            }
+        }
+        log::info!("macos: toggled tab bar on {}", window.label());
+    });
+}
+
 /// Set NSWindow.tabbingMode. `disallowed=true` before showing a Cmd+N window
 /// keeps it standalone; restore preferred afterwards (Swift fix).
 pub fn set_tabbing_mode(window: &WebviewWindow, disallowed: bool) {
