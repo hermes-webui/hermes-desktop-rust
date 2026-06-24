@@ -104,6 +104,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .build(app)?,
         )
         .separator()
+        // Mac-native tab discoverability (issue #42): summon the native tab bar
+        // even with one window open (it otherwise only appears with 2+ tabs).
+        .item(
+            &MenuItemBuilder::with_id("show_all_tabs", "Show All Tabs")
+                .accelerator("Ctrl+Cmd+T")
+                .build(app)?,
+        )
         .minimize()
         .build()?;
 

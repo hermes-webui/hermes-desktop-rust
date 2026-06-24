@@ -337,6 +337,36 @@ fn main() {
                     });
                 }
             }
+            // Test hook: drive the Show-All-Tabs toggle (#42) from the main
+            // thread, then heartbeat — guards the invariant-#12 GCD path for the
+            // `toggleTabBar:` NSWindow mutation (a frozen main thread = missing
+            // heartbeats). Inert unless HERMES_TEST_TOGGLE_TABBAR=<seconds>.
+            #[cfg(target_os = "macos")]
+            if let Ok(v) = std::env::var("HERMES_TEST_TOGGLE_TABBAR") {
+                if let Ok(secs) = v.parse::<u64>() {
+                    let h = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(secs));
+                        let h2 = h.clone();
+                        let _ = h.run_on_main_thread(move || {
+                            if let Some(w) = windows::focused_or_recent_content(&h2) {
+                                macos::toggle_tab_bar(&w);
+                                log::info!("test: toggle-tabbar hook dispatched on main");
+                            }
+                        });
+                        for i in 1..=8u32 {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            let h3 = h.clone();
+                            let _ = h.run_on_main_thread(move || {
+                                log::info!(
+                                    "test: heartbeat {i} windows={}",
+                                    windows::content_window_handles(&h3).len()
+                                );
+                            });
+                        }
+                    });
+                }
+            }
             // Passive update check shortly after launch (Sparkle parity) —
             // never blocks startup; only surfaces a dialog when an update
             // actually exists.
@@ -446,6 +476,15 @@ fn main() {
                 let _ = tauri_plugin_opener::open_url(url, None::<&str>);
             }
             "show_main" => windows::show_most_recent(app),
+            // macOS: summon the native tab bar with one window open (#42). The
+            // helper queues onto the GCD main queue (invariant #12) and returns
+            // at once, so this menu callout never touches AppKit inline.
+            #[cfg(target_os = "macos")]
+            "show_all_tabs" => {
+                if let Some(w) = windows::focused_or_recent_content(app) {
+                    macos::toggle_tab_bar(&w);
+                }
+            }
             _ => {}
         })
         .on_window_event(|window, event| match event {
@@ -491,6 +530,27 @@ fn main() {
             tauri::WindowEvent::Moved(_) => {
                 let app = window.app_handle();
                 windows::persist_first_frame(app, window);
+            }
+            tauri::WindowEvent::Focused(focused) => {
+                // Tell the page when its tab is backgrounded so the WebUI fires
+                // OS notifications for an unfocused-but-streaming tab (#32). On
+                // macOS each native tab is its own window, so window focus IS the
+                // tab-switch signal; on the Win/Linux strip this catches the
+                // whole app losing/gaining focus (per-tab switching is handled in
+                // strip::select_tab). The flag feeds only the notification gate,
+                // not SSE-close, so streams keep running (hermes-webui #4753).
+                let app = window.app_handle();
+                let label = window.label();
+                if label.starts_with("main-") {
+                    let bg = !*focused;
+                    if strip::enabled() {
+                        strip::set_active_tab_backgrounded(app, label, bg);
+                    } else if let Some(wv) = app.get_webview_window(label) {
+                        let _ = wv.eval(&format!(
+                            "window.__hermesSetBackgrounded&&window.__hermesSetBackgrounded({bg})"
+                        ));
+                    }
+                }
             }
             _ => {}
         })
