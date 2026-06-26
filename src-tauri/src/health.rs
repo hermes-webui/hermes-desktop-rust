@@ -2,13 +2,83 @@
 //! GET (never HEAD — servers may 405/501 it), and ANY HTTP response —
 //! including 4xx/5xx — counts as reachable; only transport errors fail.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-pub fn http_reachable(url: &str, timeout: Duration) -> bool {
-    let agent = ureq::AgentBuilder::new()
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::DigitallySignedStruct;
+
+/// A TLS certificate verifier that accepts every certificate — no hostname
+/// check, no CA chain validation, no expiry check. Equivalent to `curl -k`.
+/// Used ONLY for the "Test Connection" diagnostic so enterprise/internal CAs
+/// (e.g. Caddy Local Authority) that aren't in the Mozilla root store or
+/// platform trust store don't produce false negatives.
+#[derive(Debug)]
+struct PermissiveCertVerifier;
+
+impl ServerCertVerifier for PermissiveCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
+}
+
+/// Build a permissive `ureq::Agent` that skips TLS certificate verification.
+fn permissive_agent(timeout: Duration) -> ureq::Agent {
+    let tls_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PermissiveCertVerifier))
+        .with_no_client_auth();
+
+    ureq::AgentBuilder::new()
+        .tls_config(Arc::new(tls_config))
         .timeout_connect(timeout)
         .timeout(timeout)
-        .build();
+        .build()
+}
+
+pub fn http_reachable(url: &str, timeout: Duration) -> bool {
+    let agent = permissive_agent(timeout);
     match agent.get(url).call() {
         Ok(_) => true,
         // An HTTP status error still means the round-trip completed.
@@ -30,10 +100,7 @@ pub fn http_reachable(url: &str, timeout: Duration) -> bool {
 /// upstream-unavailable gateway codes are rejected. Transport errors = not
 /// ready, as before.
 pub fn http_ready(url: &str, timeout: Duration) -> bool {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(timeout)
-        .timeout(timeout)
-        .build();
+    let agent = permissive_agent(timeout);
     match agent.get(url).call() {
         Ok(_) => true,
         Err(ureq::Error::Status(code, _)) => ready_from_status(code),

@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.6.7] — Unreleased
+
+### Fixed
+
+- **"Test Connection" now skips TLS certificate verification**, matching the
+  behavior of `curl -k`. The previous strict verification rejected servers
+  using enterprise/internal CAs (e.g. Caddy Local Authority) that aren't in
+  the Mozilla root store, producing false negatives even when the server was
+  reachable from a browser. The permissive mode still catches genuine
+  transport errors (DNS failures, connection refused, timeouts).
+
 ## [v0.6.6] — 2026-06-24
 
 A batch of bug fixes and features: background-tab notifications, a Mac-native

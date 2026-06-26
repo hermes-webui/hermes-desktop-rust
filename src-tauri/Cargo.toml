@@ -24,7 +24,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-ureq = "2"
+ureq = { version = "2", features = ["native-certs"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
