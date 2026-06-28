@@ -120,12 +120,27 @@ jobs:
     # any expected asset. That keeps finalize red until a rerun completes the
     # set, so `gh run rerun --failed` always re-runs it and a release can
     # never sit complete-but-unlabeled (the v0.3.1 first-attempt gap).
+    #
+    # It also re-syncs every latest.json signature from its uploaded .sig
+    # asset and verifies the whole manifest with minisign before re-uploading.
+    # That closes the v0.6.7 class of bug: a re-fired or partially-failed build
+    # can leave latest.json carrying a stale signature from an earlier run
+    # (macOS bundles aren't reproducible — codesign + notarization embed
+    # timestamps), which fails verification on every client. A manifest whose
+    # signatures don't verify keeps finalize red and is never published.
     # RULE: only publish a release whose finalize job is green.
     needs: build
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Rename assets with platform labels and patch latest.json
+      - uses: actions/checkout@v4
+
+      - name: Install minisign (updater-signature verification)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Rename assets, sync + verify latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -163,23 +178,44 @@ jobs:
             fi
           done
 
-          # Patch latest.json URLs to the renamed assets.
+          # Finalize latest.json: patch URLs to the renamed assets, re-sync
+          # every signature from its uploaded .sig asset, then verify the whole
+          # manifest with minisign before re-uploading. Runs whenever a
+          # latest.json exists (NOT gated on a rename) so a re-fire with no
+          # renames still gets its signatures re-synced + verified — that is
+          # exactly the v0.6.7 case. The script exits non-zero (failing this
+          # job) if any artifact/sig is missing or any signature is invalid, so
+          # an unverified manifest is never re-uploaded.
           LJ_ID=$(gh api "repos/$REPO/releases/$RID/assets" --paginate \
             --jq '.[] | select(.name=="latest.json") | .id' | head -1)
-          if [ -n "$LJ_ID" ] && [ -s "$MAP_FILE" ]; then
+          if [ -n "$LJ_ID" ]; then
             gh api "repos/$REPO/releases/assets/$LJ_ID" \
               -H "Accept: application/octet-stream" > latest.json
-            while IFS=$'\t' read -r OLD NEW; do
-              # URL-encode spaces/dots are handled by GitHub; names here are
-              # dot-separated already. Replace both raw and URL-encoded forms.
-              OLD_ENC=$(printf '%s' "$OLD" | sed 's/ /%20/g')
-              NEW_ENC=$(printf '%s' "$NEW" | sed 's/ /%20/g')
-              sed -i "s|$OLD_ENC|$NEW_ENC|g; s|$OLD|$NEW|g" latest.json
-            done < "$MAP_FILE"
-            gh api -X DELETE "repos/$REPO/releases/assets/$LJ_ID" > /dev/null
-            gh release upload "$TAG" latest.json --repo "$REPO"
-            echo "latest.json patched:"
-            grep -o '"url": *"[^"]*"' latest.json || true
+            # 1) URL rename — only when assets were actually renamed this run.
+            if [ -s "$MAP_FILE" ]; then
+              while IFS=$'\t' read -r OLD NEW; do
+                # URL-encode spaces/dots are handled by GitHub; names here are
+                # dot-separated already. Replace both raw and URL-encoded forms.
+                OLD_ENC=$(printf '%s' "$OLD" | sed 's/ /%20/g')
+                NEW_ENC=$(printf '%s' "$NEW" | sed 's/ /%20/g')
+                sed -i "s|$OLD_ENC|$NEW_ENC|g; s|$OLD|$NEW|g" latest.json
+              done < "$MAP_FILE"
+            fi
+            # 2) Download the (renamed) updater artifacts + their .sig assets,
+            #    re-sync latest.json's signatures from them, and verify all.
+            mkdir -p _verify
+            gh release download "$TAG" --repo "$REPO" --dir _verify --clobber \
+              --pattern '*.sig' --pattern '*.app.tar.gz' --pattern '*.msi' \
+              --pattern '*-setup.exe' --pattern '*.AppImage' --pattern '*.deb'
+            PUBKEY=$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json \
+              | base64 -d | sed -n '2p')
+            python3 scripts/sync_latest_json.py latest.json _verify "$PUBKEY"
+            # 3) Re-upload the verified manifest. --clobber overwrites in one
+            #    step (no window where latest.json is missing); only reached if
+            #    verification passed.
+            gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+            echo "latest.json finalized + signatures verified:"
+            grep -o '"url": *"[^"]*"' latest.json | sort -u || true
           fi
 
           # Completeness gate (real version tags only): fail unless every
