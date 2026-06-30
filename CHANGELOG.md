@@ -1,5 +1,26 @@
 # Changelog
 
+## [v0.6.8] — 2026-06-30
+
+### Fixed
+
+- **Linux: the WebUI no longer renders below a large empty gap under the tab
+  strip** (issue #67). On many Linux setups (VMs, Xvfb, remote/forwarded X, and
+  any display where the X server misreports its physical size) the content
+  webview was
+  pushed hundreds of pixels down the window, leaving a tall black band beneath
+  the 38px tab strip and squashing the app into the lower portion of the window.
+  Root cause: the shell positions each tab's webview as an X11 child window, and
+  wry's WebKitGTK backend re-derives its *own* scale factor for child windows
+  from the X screen's reported DPI (`screen_px × 25.4 ÷ screen_mm ÷ 96`). When
+  that DPI is wrong, the logical `38px` strip offset we passed got multiplied by
+  the bad factor (≈4.5× on the affected display → a ~171px gap). The strip and
+  content webviews are now placed with **physical** coordinates computed from
+  the window's real GTK scale factor, which wry passes through unchanged — so
+  the geometry lands exactly under the tab strip regardless of the X server's
+  DPI, and stays correct on genuine HiDPI displays. macOS and Windows are
+  unaffected (their webview backends already use the window's real scale).
+
 ## [v0.6.6] — 2026-06-24
 
 A batch of bug fixes and features: background-tab notifications, a Mac-native
