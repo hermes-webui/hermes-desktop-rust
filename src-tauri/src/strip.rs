@@ -16,10 +16,50 @@ use std::sync::atomic::Ordering;
 use tauri::webview::{Color, Cookie, WebviewBuilder};
 use tauri::window::WindowBuilder;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl, Window, Wry,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    Position, Size, Webview, WebviewUrl, Window, Wry,
 };
 
 pub const STRIP_HEIGHT: f64 = 38.0;
+
+/// Convert a logical child-webview position to the unit the platform's wry
+/// backend wants for `add_child` / `set_position`.
+///
+/// macOS (WKWebView) and Windows (WebView2) place child webviews using the
+/// window's OWN scale factor, so logical coordinates land correctly. WebKitGTK
+/// (Linux) is the exception: wry creates the child as an X11 sub-window and
+/// re-derives its OWN scale factor from the X screen's reported physical size
+/// (`scale_factor_from_x11` = screen_px * 25.4 / screen_mm / 96). On VMs, Xvfb,
+/// remote/forwarded X and many real setups that value is bogus (X reports a
+/// nonsense mm size), so wry multiplies our logical 38px strip offset by a
+/// wrong factor and the content webview is shoved hundreds of pixels down —
+/// the big empty gap under the tab strip, never caught by the headless smoke
+/// test (which runs against a fake X screen). Passing PHYSICAL coordinates
+/// (computed with tao's real GTK scale factor) makes wry's internal
+/// `to_physical()` an identity cast, so the geometry lands exactly where
+/// intended regardless of the X server's DPI lie — and stays correct under
+/// genuine HiDPI (scale 2).
+fn child_position(x: f64, y: f64, scale: f64) -> Position {
+    if cfg!(target_os = "linux") {
+        PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32).into()
+    } else {
+        LogicalPosition::new(x, y).into()
+    }
+}
+
+/// Companion to [`child_position`] for sizes — see that doc for why Linux needs
+/// physical units while macOS/Windows take logical.
+fn child_size(w: f64, h: f64, scale: f64) -> Size {
+    if cfg!(target_os = "linux") {
+        PhysicalSize::new(
+            (w * scale).round().max(0.0) as u32,
+            (h * scale).round().max(0.0) as u32,
+        )
+        .into()
+    } else {
+        LogicalSize::new(w, h).into()
+    }
+}
 
 /// Strip mode is the tab implementation everywhere except macOS.
 pub fn enabled() -> bool {
@@ -47,15 +87,15 @@ fn find_webview(win: &Window<Wry>, label: &str) -> Option<Webview<Wry>> {
     win.webviews().into_iter().find(|w| w.label() == label)
 }
 
-fn content_bounds(win: &Window<Wry>, top: f64) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+fn content_bounds(win: &Window<Wry>, top: f64) -> (Position, Size) {
     let scale = win.scale_factor().unwrap_or(1.0);
     let size = win
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or(LogicalSize::new(1280.0, 830.0));
     (
-        LogicalPosition::new(0.0, top),
-        LogicalSize::new(size.width, (size.height - top).max(0.0)),
+        child_position(0.0, top, scale),
+        child_size(size.width, (size.height - top).max(0.0), scale),
     )
 }
 
@@ -244,8 +284,8 @@ fn build_strip_window(
         .unwrap_or(LogicalSize::new(1280.0, 830.0));
     if let Err(e) = win.add_child(
         swb,
-        LogicalPosition::new(0.0, 0.0),
-        LogicalSize::new(logical.width, STRIP_HEIGHT),
+        child_position(0.0, 0.0, scale),
+        child_size(logical.width, STRIP_HEIGHT, scale),
     ) {
         log::error!("strip: strip webview failed: {e}");
     }
