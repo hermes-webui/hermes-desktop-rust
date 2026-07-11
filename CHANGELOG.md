@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.6.9]
+
+### Fixed
+
+- **"Test Connection" (and all connection probes) now trust enterprise and
+  internal CAs installed in the OS trust store.** The Rust-side probes
+  verified TLS against the bundled Mozilla root store only, so a server
+  behind a corporate PKI or an internal CA (e.g. Caddy Local Authority) that
+  the OS trusts — and that the webview itself happily loads — reported
+  "✗ Unreachable". Probes now verify against the union of the bundled roots
+  and the OS trust store: strictly additive, so every certificate that
+  verified before still does, and certificate verification is never skipped
+  or weakened. (#60, reported by ycj; supersedes the declined
+  disable-verification approach from PR #59.)
+
 ## [v0.6.8] — 2026-06-30
 
 ### Fixed
