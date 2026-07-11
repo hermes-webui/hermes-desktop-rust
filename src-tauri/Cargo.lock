@@ -1717,6 +1717,8 @@ dependencies = [
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
  "regex",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "tauri",
@@ -1732,6 +1734,7 @@ dependencies = [
  "tauri-plugin-updater",
  "ureq",
  "url",
+ "webpki-roots 0.26.11",
  "x11-dl",
 ]
 
