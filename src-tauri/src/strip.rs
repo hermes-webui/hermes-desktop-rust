@@ -40,7 +40,7 @@ pub const STRIP_HEIGHT: f64 = 38.0;
 /// intended regardless of the X server's DPI lie — and stays correct under
 /// genuine HiDPI (scale 2).
 fn child_position(x: f64, y: f64, scale: f64) -> Position {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") && linux_backend_is_x11() {
         PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32).into()
     } else {
         LogicalPosition::new(x, y).into()
@@ -50,7 +50,7 @@ fn child_position(x: f64, y: f64, scale: f64) -> Position {
 /// Companion to [`child_position`] for sizes — see that doc for why Linux needs
 /// physical units while macOS/Windows take logical.
 fn child_size(w: f64, h: f64, scale: f64) -> Size {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") && linux_backend_is_x11() {
         PhysicalSize::new(
             (w * scale).round().max(0.0) as u32,
             (h * scale).round().max(0.0) as u32,
@@ -59,6 +59,42 @@ fn child_size(w: f64, h: f64, scale: f64) -> Size {
     } else {
         LogicalSize::new(w, h).into()
     }
+}
+
+/// Whether GDK is running its X11 backend (vs native Wayland). The #67/#68
+/// bogus-DPI derivation this file compensates for lives ONLY in wry's X11
+/// path (`scale_factor_from_x11`); on native Wayland wry's scale is sane, so
+/// applying the physical-coordinate compensation there over-corrects and
+/// shoves the content down — the issue #80 top gap. GDK picks Wayland when
+/// `WAYLAND_DISPLAY` is set unless `GDK_BACKEND` overrides; XWayland
+/// (`GDK_BACKEND=x11` under a Wayland session) goes through the X11 path and
+/// DOES need the compensation.
+fn linux_backend_is_x11() -> bool {
+    use std::sync::OnceLock;
+    static IS_X11: OnceLock<bool> = OnceLock::new();
+    *IS_X11.get_or_init(|| {
+        x11_from_env(
+            std::env::var("GDK_BACKEND").ok().as_deref(),
+            std::env::var("WAYLAND_DISPLAY").is_ok(),
+        )
+    })
+}
+
+/// Pure decision for [`linux_backend_is_x11`], mirroring GDK's backend choice.
+/// `GDK_BACKEND` is an ordered preference list ("x11,wayland") — the first
+/// recognized backend wins (XWayland makes x11 startable on Wayland desktops,
+/// so first-listed is what actually runs in practice).
+fn x11_from_env(gdk_backend: Option<&str>, wayland_display: bool) -> bool {
+    if let Some(list) = gdk_backend {
+        for tok in list.split(',') {
+            match tok.trim().to_ascii_lowercase().as_str() {
+                "x11" => return true,
+                "wayland" => return false,
+                _ => continue,
+            }
+        }
+    }
+    !wayland_display
 }
 
 /// Strip mode is the tab implementation everywhere except macOS.
@@ -768,7 +804,24 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
             if bounced {
                 log::info!("strip: restored tab {tab2} bounced to root — retrying {deep}");
                 let _ = wv2.navigate(deep);
+                return;
             }
+            // Second #37 shape (the one the v0.6.1 root-bounce retry above
+            // never catches — b3nw still hit it on v0.6.1): the WebUI shows
+            // its "Session not available in web UI." empty state IN PLACE at
+            // the deep route, without bouncing the URL. The session exists —
+            // switching away and back loads it — i.e. the deep link raced the
+            // session index and a re-resolve fixes it. Probe the page once,
+            // ~5s after create, and reload in place if the marker is present
+            // (the exact string rendered by webui sessions.js). One-shot: a
+            // healthy tab never matches and pays nothing.
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let _ = wv2.eval(
+                r#"(function(){try{
+                     var t = document.body ? (document.body.innerText || '') : '';
+                     if (t.indexOf('Session not available in web UI.') !== -1) location.reload();
+                   }catch(e){}})();"#,
+            );
         });
     }
 }
@@ -1446,7 +1499,7 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::partition_suffix;
+    use super::{partition_suffix, x11_from_env};
 
     #[test]
     fn parses_partition_suffix() {
@@ -1456,5 +1509,26 @@ mod tests {
         assert_eq!(partition_suffix("tab-10-0"), Some(0));
         assert_eq!(partition_suffix("garbage"), None);
         assert_eq!(partition_suffix(""), None);
+    }
+
+    #[test]
+    fn x11_detection_mirrors_gdk_backend_choice() {
+        // Issue #80: the physical-coordinate compensation (#67/#68) must apply
+        // ONLY where wry's bogus X11 DPI derivation runs.
+        // Plain X11 session: no wayland display, no override → X11.
+        assert!(x11_from_env(None, false));
+        // Native Wayland session → NOT X11 (compensation off).
+        assert!(!x11_from_env(None, true));
+        // XWayland forced via GDK_BACKEND=x11 → X11 path (compensation ON —
+        // XWayland screens report bogus mm sizes too).
+        assert!(x11_from_env(Some("x11"), true));
+        // Explicit wayland override wins even without WAYLAND_DISPLAY.
+        assert!(!x11_from_env(Some("wayland"), false));
+        // GDK_BACKEND fallback lists.
+        assert!(x11_from_env(Some("x11,wayland"), true));
+        assert!(!x11_from_env(Some("wayland,x11"), true));
+        // Unrelated override (e.g. "broadway") on an X session → default rule.
+        assert!(x11_from_env(Some("broadway"), false));
+        assert!(!x11_from_env(Some("broadway"), true));
     }
 }

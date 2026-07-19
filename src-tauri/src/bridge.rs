@@ -412,6 +412,7 @@ const SHORTCUT_FORWARDER: &str = r##"
     var send = function (v) { e.preventDefault(); e.stopPropagation(); EMIT('shortcut', v); };
     if (k === 'tab') { send(e.shiftKey ? 'prev-tab' : 'next-tab'); return; }
     if (k === 'b' && e.shiftKey) { send('toggle-bar'); return; }
+    if (k === 'r' && e.shiftKey) { send('reload-all'); return; }
     if (e.shiftKey) return;
     if (k === 't') send('new-tab');
     else if (k === 'n') send('new-window');
@@ -559,6 +560,12 @@ const BUSY_REPORTER: &str = r##"
     else report();
     setInterval(report, 700);
     window.addEventListener('focus', report);
+    // Native re-poll hook (issue #74): hidden webviews throttle/suspend timers,
+    // so a session finishing in a background tab may never tick the interval —
+    // the spinner goes stale until focus. The shell evals this on its own 4s
+    // loop; an eval executes even when timers are throttled, and it re-reads
+    // the live S.busy at that moment.
+    window.__hermesReportBusy = report;
   })();
 "##;
 
@@ -614,11 +621,13 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     }
     if cfg!(not(target_os = "macos")) {
         parts.push(SHORTCUT_FORWARDER);
-        // Profile dot + working glyph are strip-only (Windows/Linux); macOS
-        // native tabs have no strip, so skip these reporters there (#31, #46).
+        // Profile dot is strip-only (Windows/Linux); macOS gets its profile
+        // indicator from MACOS_PROFILE_REPORTER above (#31, #44).
         parts.push(PROFILE_REPORTER);
-        parts.push(BUSY_REPORTER);
     }
+    // Busy state feeds the strip spinner on Win/Linux (#46) AND the native
+    // tab-title "⟳" adornment on macOS (#65) — inject everywhere.
+    parts.push(BUSY_REPORTER);
     parts.push(THEME_BRIDGE);
     parts.push(ROUTE_REPORTER);
     parts.push(WINDOW_OPEN);
@@ -688,11 +697,15 @@ pub fn install(app: &AppHandle) {
                     crate::strip::set_tab_dot_profile(&handle, &label, &name);
                 }
             }
-            // Tab busy/streaming state for the per-tab "working" glyph (#46).
+            // Tab busy/streaming state: the per-tab "working" glyph on the
+            // Win/Linux strip (#46), and the "⟳" native-title adornment on
+            // macOS content windows (#65).
             "busy" => {
+                let busy = payload["value"].as_bool().unwrap_or(false);
                 if crate::strip::enabled() && label.starts_with("tab-") {
-                    let busy = payload["value"].as_bool().unwrap_or(false);
                     crate::strip::set_tab_busy(&handle, &label, busy);
+                } else if cfg!(target_os = "macos") && label.starts_with("main-") {
+                    windows::set_window_indicator(&handle, &label, Some(busy), None);
                 }
             }
             // Active-profile NAME for the macOS native tab title (issue #44).
@@ -709,12 +722,23 @@ pub fn install(app: &AppHandle) {
                     let body = payload["value"]["body"]
                         .as_str()
                         .unwrap_or("Your response is ready");
-                    let _ = handle
-                        .notification()
-                        .builder()
-                        .title(title)
-                        .body(body)
-                        .show();
+                    // Cross-tab dedupe (issues #51/#81): every tab carries the
+                    // notification shim independently, so N tabs observing the
+                    // same server event (approval pending, response ready) each
+                    // emit the same notify — and a re-firing page can loop.
+                    // This is the single choke point all tabs funnel through;
+                    // suppress identical title+body within a fixed window. A
+                    // still-pending approval re-notifies at most once per
+                    // window (gentle reminder) instead of flooding (#81), and
+                    // app re-open with many tabs shows ONE notification (#51).
+                    if notify_fresh(title, body) {
+                        let _ = handle
+                            .notification()
+                            .builder()
+                            .title(title)
+                            .body(body)
+                            .show();
+                    }
                 }
             }
             "open-external" => {
@@ -778,6 +802,11 @@ pub fn install(app: &AppHandle) {
                         }
                         "next-tab" => crate::strip::cycle_tab(&handle, &label, true),
                         "prev-tab" => crate::strip::cycle_tab(&handle, &label, false),
+                        // Reload every tab in every window (issue #76): one
+                        // action to clear the per-tab "must hard refresh"
+                        // banners after a WebUI update (also the ⋮/View menu
+                        // "Refresh All Tabs").
+                        "reload-all" => windows::eval_all_content(&handle, "location.reload();"),
                         "toggle-bar" => {
                             if crate::strip::enabled() && label.starts_with("tab-") {
                                 let app = handle.clone();
@@ -892,4 +921,84 @@ fn handle_theme_report(app: &AppHandle, css: &str) {
     );
     let state = app.state::<AppState>();
     let _ = state; // theme cache persisted above; nothing else to track
+}
+
+/// Cross-tab notification dedupe (issues #51/#81). Every tab carries the
+/// notification shim independently, so N tabs observing the same server-side
+/// event each emit an identical notify — and a page that re-fires for a
+/// still-pending approval can loop. All tabs funnel through the single
+/// `"notify"` bridge arm, so one fixed-window cache there collapses both.
+/// FIXED window (timestamps aren't refreshed on suppressed hits): a pending
+/// approval still re-notifies once per window as a gentle reminder, instead
+/// of never again — and instead of a flood.
+fn notify_fresh(title: &str, body: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static SEEN: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    dedupe_decide(&mut seen, format!("{title}\u{1}{body}"), Instant::now())
+}
+
+/// Pure decision for [`notify_fresh`]: prune expired entries, then show only
+/// if the key isn't present. Insert-on-show only — suppressed repeats do NOT
+/// slide the window, so a persistent repeater surfaces once per WINDOW.
+const NOTIFY_DEDUPE_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+fn dedupe_decide(
+    seen: &mut std::collections::HashMap<String, std::time::Instant>,
+    key: String,
+    now: std::time::Instant,
+) -> bool {
+    seen.retain(|_, t| now.duration_since(*t) < NOTIFY_DEDUPE_WINDOW);
+    if seen.contains_key(&key) {
+        return false;
+    }
+    seen.insert(key, now);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dedupe_decide, NOTIFY_DEDUPE_WINDOW};
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn duplicate_notifications_suppressed_within_window() {
+        let mut seen = HashMap::new();
+        let t0 = Instant::now();
+        assert!(dedupe_decide(&mut seen, "a\u{1}b".into(), t0));
+        // Same title+body from another tab moments later (#51) → suppressed.
+        assert!(!dedupe_decide(
+            &mut seen,
+            "a\u{1}b".into(),
+            t0 + Duration::from_secs(2)
+        ));
+        // A flood of identical re-fires (#81) stays suppressed inside the window…
+        assert!(!dedupe_decide(
+            &mut seen,
+            "a\u{1}b".into(),
+            t0 + Duration::from_secs(15)
+        ));
+        // …but a still-pending approval re-notifies once the window lapses
+        // (fixed window: the suppressed hits above must not have slid it).
+        assert!(dedupe_decide(
+            &mut seen,
+            "a\u{1}b".into(),
+            t0 + NOTIFY_DEDUPE_WINDOW + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn distinct_notifications_pass_through() {
+        let mut seen = HashMap::new();
+        let t0 = Instant::now();
+        assert!(dedupe_decide(&mut seen, "a\u{1}b".into(), t0));
+        // Different body (another session finishing) is NOT collapsed.
+        assert!(dedupe_decide(&mut seen, "a\u{1}c".into(), t0));
+        assert!(dedupe_decide(&mut seen, "x\u{1}b".into(), t0));
+    }
 }
