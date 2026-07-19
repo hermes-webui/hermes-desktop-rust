@@ -1,6 +1,65 @@
 # Changelog
 
-## [v0.6.9] — 2026-07-11
+## [v0.7.0] — 2026-07-18
+
+An issue-sweep release: nine tracker items land at once — Wayland layout,
+macOS per-tab state indicators, cross-tab notification dedupe, stale-spinner
+and restored-session fixes, refresh-all, and quality-of-life items.
+
+### Added
+
+- **macOS: native tabs now show per-tab state** — "●" prefixed to the tab
+  title when a session is waiting on you (approval/clarify), "⟳" while it's
+  working (issues #64/#65). The signals existed (the page reports both) but
+  macOS discarded them; they now adorn the native tab title the same way the
+  profile-name prefix does, so a backgrounded tab's state is visible at a
+  glance. Attention outranks working when both apply.
+- **Refresh All Tabs** (issue #76): one action — in the ⋮ menu, the macOS
+  View menu, or Ctrl/Cmd+Shift+R — reloads every tab in every window, so a
+  WebUI update no longer means clicking the "must hard refresh" banner in
+  each tab individually.
+- **Click-to-copy version** (issue #75): the version row in the ⋮ menu (and
+  a new "Copy Version" item in the macOS app menu) copies a paste-ready
+  identifier for bug reports, confirmed with a notification.
+- **Linux safe-render escape hatch** (issue #78): launching with
+  `HERMES_DESKTOP_SAFE_RENDER=1` disables WebKitGTK's DMABUF renderer and
+  compositing mode before any webview initializes — the recovery path for
+  GPU/driver combos where EGL fails and the window comes up blank (e.g.
+  "Could not create default EGL display: EGL_BAD_PARAMETER" on Fedora).
+  Explicitly-set `WEBKIT_*` variables always win.
+
+### Fixed
+
+- **Wayland: huge empty space above the WebUI** (issue #80). The v0.6.8 fix
+  for the X11 gap (#67) passes physical child-webview coordinates to defeat
+  wry's bogus X11 DPI derivation — but it applied on ALL Linux, and on native
+  Wayland (where wry's scale is sane) it over-corrects into a top gap. The
+  compensation now applies only when GDK actually runs its X11 backend
+  (including XWayland, which needs it); native Wayland gets plain logical
+  coordinates.
+- **Duplicate notifications across tabs, and notification floods** (issues
+  #51/#81). Every tab observes the same server events, so N open tabs meant
+  N identical OS notifications — and a page re-firing for a still-pending
+  approval could pile up notifications indefinitely (reported on Linux/
+  Wayland as "approval kept appearing until the app crashed"). All tabs
+  funnel through one native handler, which now suppresses identical
+  notifications within a 30-second window: many tabs produce one
+  notification, and a persistent repeater surfaces at most once per window
+  as a gentle reminder instead of a flood.
+- **Tab "working" spinner no longer goes stale on background tabs** (issue
+  #74). Hidden webviews throttle their timers, so the in-page busy reporter
+  could go quiet and leave a finished session spinning until you clicked the
+  tab. The shell now re-polls every tab's busy state on its own 4-second
+  loop — an eval runs regardless of timer throttling — so the spinner clears
+  within seconds of the session finishing, focused or not.
+- **Restored session tabs showing "Session not available in web UI." at
+  launch** (issue #37, third and hopefully final round). The v0.6.1 retry
+  only caught the variant where the WebUI bounces the tab back to the root
+  URL; the reported symptom shows the message in place at the deep URL. The
+  shell now also probes the restored tab's page once (~5s after creation)
+  and reloads it in place if the marker is present — the programmatic
+  equivalent of the switch-away-and-back that always fixed it. Healthy tabs
+  match nothing and pay nothing.
 
 ### Fixed
 

@@ -230,6 +230,24 @@ fn main() {
         unsafe { (xlib.XInitThreads)() };
     }
 
+    // Linux safe-render escape hatch (issue #78): on some GPU/driver combos
+    // (NVIDIA proprietary, some VMs, Fedora+EGL mismatches) WebKitGTK's DMABUF
+    // renderer fails hard — "Could not create default EGL display:
+    // EGL_BAD_PARAMETER" and a blank window, app unusable. Setting
+    // HERMES_DESKTOP_SAFE_RENDER=1 flips WebKitGTK to its safe paths BEFORE
+    // any webview initializes. Explicit user-set WEBKIT_* values always win.
+    #[cfg(target_os = "linux")]
+    if std::env::var("HERMES_DESKTOP_SAFE_RENDER").is_ok_and(|v| v == "1") {
+        for (k, v) in [
+            ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ] {
+            if std::env::var(k).is_err() {
+                std::env::set_var(k, v);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Second launch (e.g. double-opening the .app/.exe): focus the
@@ -406,6 +424,16 @@ fn main() {
                     if strip::enabled() {
                         strip::recapture_profiles(&sess_handle);
                     }
+                    // Busy re-poll (issue #74): hidden webviews throttle their
+                    // timers, so BUSY_REPORTER's 700ms interval can go quiet in
+                    // a background tab and leave the spinner stale after the
+                    // session finishes. An eval executes regardless of timer
+                    // throttling and re-reads the live S.busy; the reporter's
+                    // debounce means this emits only on an actual change.
+                    windows::eval_all_content(
+                        &sess_handle,
+                        "window.__hermesReportBusy && window.__hermesReportBusy();",
+                    );
                 });
             }
             // Chrome poller — the Tauri stand-in for the Swift app's
@@ -440,6 +468,27 @@ fn main() {
             "new_tab" => conn::open_new_session(app, true),
             "paste" => paste::paste_into_focused(app),
             "reload" => windows::active_content_eval(app, "location.reload();"),
+            // Reload EVERY tab in every window (issue #76): one action to
+            // clear the per-tab "must hard refresh" banners after a WebUI
+            // update, instead of clicking through each tab.
+            "reload_all" => windows::eval_all_content(app, "location.reload();"),
+            // Click-to-copy the version from the ⋮/app menu (issue #75) —
+            // exact paste-ready string for bug reports, confirmed by a
+            // notification (it's a direct user action, so always confirm).
+            "copy_version" => {
+                let v = format!(
+                    "Hermes WebUI Desktop v{} ({})",
+                    app.package_info().version,
+                    std::env::consts::OS
+                );
+                let copied = arboard::Clipboard::new()
+                    .and_then(|mut c| c.set_text(v.clone()))
+                    .is_ok();
+                if copied {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app.notification().builder().title("Copied").body(v).show();
+                }
+            }
             "quit" => app.exit(0),
             "check_updates" => updater::spawn_check(app, true),
             "reveal_logs" => {

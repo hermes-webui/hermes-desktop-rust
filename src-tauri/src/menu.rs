@@ -10,6 +10,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .separator()
         .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(app)?)
         .item(&MenuItemBuilder::with_id("whats_new", "What's New").build(app)?)
+        .item(
+            // Paste-ready version string for bug reports (issue #75).
+            &MenuItemBuilder::with_id("copy_version", "Copy Version").build(app)?,
+        )
         .item(&MenuItemBuilder::with_id("reveal_logs", "Reveal Log File").build(app)?)
         .separator()
         .item(
@@ -75,6 +79,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .item(
             &MenuItemBuilder::with_id("reload", "Reload")
                 .accelerator("CmdOrCtrl+R")
+                .build(app)?,
+        )
+        .item(
+            // Reload every tab in every window (issue #76).
+            &MenuItemBuilder::with_id("reload_all", "Refresh All Tabs")
+                .accelerator("CmdOrCtrl+Shift+R")
                 .build(app)?,
         )
         .separator()
@@ -156,6 +166,12 @@ pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
     items.push(Box::new(item("reload", "Reload\tCtrl+R")?));
     items.push(Box::new(item("find", "Find in Page…\tCtrl+F")?));
+    // One action to reload every tab in every window (issue #76) — clears the
+    // per-tab "must hard refresh" banners after a WebUI update.
+    items.push(Box::new(item(
+        "reload_all",
+        "Refresh All Tabs\tCtrl+Shift+R",
+    )?));
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
     items.push(Box::new(item("zoom_in", "Zoom In\tCtrl+=")?));
     items.push(Box::new(item("zoom_out", "Zoom Out\tCtrl+-")?));
@@ -164,11 +180,13 @@ pub fn build_strip_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(Box::new(item("preferences", "Preferences…\tCtrl+,")?));
     items.push(Box::new(item("open_browser", "Open in Browser")?));
     items.push(Box::new(PredefinedMenuItem::separator(app)?));
-    items.push(Box::new(
-        MenuItemBuilder::with_id("about_version", format!("Hermes WebUI Desktop v{version}"))
-            .enabled(false)
-            .build(app)?,
-    ));
+    // Click-to-copy (issue #75): the version row is a live item — clicking it
+    // copies a paste-ready identifier for bug reports (confirmed by a
+    // notification via the copy_version handler).
+    items.push(Box::new(item(
+        "copy_version",
+        &format!("Hermes WebUI Desktop v{version} — click to copy"),
+    )?));
     items.push(Box::new(item("whats_new", "What's New")?));
     items.push(Box::new(item("check_updates", "Check for Updates…")?));
     items.push(Box::new(item("reveal_logs", "Reveal Log File")?));

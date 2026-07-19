@@ -104,6 +104,13 @@ pub struct AppState {
     /// prefix. Display-only; the cookie-value `window_profiles` above remains
     /// the source for restore re-seeding.
     pub window_profile_names: Mutex<HashMap<String, String>>,
+    /// macOS only: content-window label -> (busy, attention) for the native
+    /// tab-title adornment (issues #64/#65) — "●" when the session waits on
+    /// you, "⟳" while it works. Win/Linux keep these per-TabEntry (the strip
+    /// dot and spinner) instead. busy arrives via BUSY_REPORTER bridge events
+    /// (now injected on macOS too); attention via the leading ● marker on the
+    /// reported document.title, which the mac branch previously discarded.
+    pub window_indicators: Mutex<HashMap<String, (bool, bool)>>,
     /// macOS only: set once per launch after the first connect to fire the
     /// one-time "tabs exist" discoverability hint at most once per run (issue
     /// #42); the persisted `tabsHintShown` pref is the across-launch gate.
@@ -166,6 +173,7 @@ impl AppState {
             strip: Mutex::new(HashMap::new()),
             window_profiles: Mutex::new(HashMap::new()),
             window_profile_names: Mutex::new(HashMap::new()),
+            window_indicators: Mutex::new(HashMap::new()),
             tabs_hinted: AtomicBool::new(false),
             navigated: Mutex::new(HashSet::new()),
             session_restored: AtomicBool::new(false),

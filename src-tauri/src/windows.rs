@@ -153,6 +153,7 @@ pub fn forget(app: &AppHandle, label: &str) {
     state.raw_titles.lock().unwrap().remove(label);
     state.window_profiles.lock().unwrap().remove(label);
     state.window_profile_names.lock().unwrap().remove(label);
+    state.window_indicators.lock().unwrap().remove(label);
     crate::session::forget_navigated(app, label);
     crate::session::forget_url(app, label);
 }
@@ -783,7 +784,48 @@ pub fn refresh_title(app: &AppHandle, label: &str) {
         Some(name) if !name.is_empty() => format!("{name} · {base}"),
         _ => base,
     };
+    // State adornment (issues #64/#65), outermost so it's always visible:
+    // "●" = the session is waiting on you (approval/clarify — the page's own
+    // title marker, previously stripped and dropped here); "⟳" = working.
+    // Attention outranks busy: a paused-for-you run matters more than motion.
+    let titled = match state
+        .window_indicators
+        .lock()
+        .unwrap()
+        .get(label)
+        .copied()
+        .unwrap_or((false, false))
+    {
+        (_, true) => format!("● {titled}"),
+        (true, false) => format!("⟳ {titled}"),
+        _ => titled,
+    };
     let _ = w.set_title(&titled);
+}
+
+/// Update a content window's (busy, attention) native-title adornment (issues
+/// #64/#65) — `None` leaves that half unchanged. Repaints only on change.
+pub fn set_window_indicator(
+    app: &AppHandle,
+    label: &str,
+    busy: Option<bool>,
+    attention: Option<bool>,
+) {
+    let changed = {
+        let state = app.state::<AppState>();
+        let mut map = state.window_indicators.lock().unwrap();
+        let cur = map.get(label).copied().unwrap_or((false, false));
+        let next = (busy.unwrap_or(cur.0), attention.unwrap_or(cur.1));
+        if next == cur {
+            false
+        } else {
+            map.insert(label.to_string(), next);
+            true
+        }
+    };
+    if changed {
+        refresh_title(app, label);
+    }
 }
 
 /// Set (or clear, on empty) a content window's active profile NAME, used to
@@ -823,13 +865,16 @@ pub fn apply_reported_title(app: &AppHandle, label: &str, raw: &str) {
     if label.starts_with("tab-") {
         strip::set_tab_title(app, label, title, attention);
     } else {
-        // macOS / regular content windows: no per-tab badge, but store the
-        // marker-free title so the native window title never shows a stray "●".
+        // macOS / regular content windows: store the marker-free title (the
+        // adornment is re-applied in a controlled position by refresh_title)
+        // and keep the attention flag — it used to be dropped here, which is
+        // why macOS never showed needs-attention state (issue #64).
         app.state::<AppState>()
             .raw_titles
             .lock()
             .unwrap()
             .insert(label.to_string(), title.to_string());
+        set_window_indicator(app, label, None, Some(attention));
         refresh_title(app, label);
     }
 }
