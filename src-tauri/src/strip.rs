@@ -33,14 +33,14 @@ fn linux_child_packing(is_strip: bool) -> (bool, i32) {
 
 /// Tauri 2.11's Linux `WindowChild` path calls `build_gtk(default_vbox)`;
 /// wry then packs every webview into that GtkBox with expand=true and ignores
-/// the requested child bounds. With the strip and content both expanding they
-/// split the window vertically — the issue #83 "gap" is an oversized strip.
-/// Correct the GTK child packing directly: fixed 38px strip, expanding content.
+/// the requested child bounds. This behavior is shared by the X11 and Wayland
+/// GTK backends: with the strip and content both expanding, they split the
+/// window vertically and the oversized strip appears as a large empty gap.
+/// Correct the GTK child packing directly on every Linux backend: fixed 38px
+/// strip, expanding content. Keep backend-specific coordinate compensation in
+/// `child_position` and `child_size`; packing itself is coordinate-free.
 #[cfg(target_os = "linux")]
 fn apply_linux_child_packing(webview: &Webview<Wry>, is_strip: bool) {
-    if !linux_backend_is_x11() {
-        return;
-    }
     let (expand, height) = linux_child_packing(is_strip);
     if let Err(e) = webview.with_webview(move |native| {
         use gtk::prelude::*;
@@ -1551,10 +1551,11 @@ mod tests {
     use super::{linux_child_packing, partition_suffix, x11_from_env, STRIP_HEIGHT};
 
     #[test]
-    fn linux_gtk_box_reserves_only_the_strip_height() {
-        // Issue #83: Tauri builds Linux child webviews into a GtkBox. If both
-        // children keep GTK's default expand=true, they split the window and
-        // produce the huge blank band. The strip is fixed; content gets rest.
+    fn linux_gtk_box_reserves_only_the_strip_height_on_every_backend() {
+        // Issues #80/#83: Tauri builds both X11 and Wayland child webviews into
+        // a GtkBox. If both children keep GTK's default expand=true, they split
+        // the window and produce the huge blank band. The strip is fixed;
+        // content gets the rest, independently of backend-specific coordinates.
         assert_eq!(linux_child_packing(true), (false, STRIP_HEIGHT as i32));
         assert_eq!(linux_child_packing(false), (true, -1));
     }

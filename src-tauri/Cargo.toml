@@ -47,8 +47,8 @@ libc = "0.2"
 # wrapper, so Wayland-only systems without libX11 degrade gracefully.
 x11-dl = "2"
 # Tauri 2.11 builds Linux child webviews into the window's GtkBox and ignores
-# their requested bounds. strip.rs sets per-child packing so the 38px strip
-# stays fixed while the active content webview expands into the remaining area.
+# their requested bounds on X11 and Wayland. strip.rs sets per-child packing so
+# the 38px strip stays fixed while active content expands into the remaining area.
 gtk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
