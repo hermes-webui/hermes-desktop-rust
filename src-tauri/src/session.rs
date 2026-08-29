@@ -15,10 +15,10 @@
 //!
 //! Restoration re-seeds each tab's `hermes_profile` cookie so it reopens on the
 //! same profile (the per-tab profile isolation of v0.3.7/v0.3.8). Only that
-//! non-sensitive profile *selector* is persisted — never auth/login/session
-//! cookies — so an authenticated server simply re-prompts for login after a
-//! restart. The cookie is reconstructed host-only + HttpOnly + Path=/ to match
-//! how the WebUI sets it.
+//! non-sensitive profile *selector* is written to the session blob. On macOS,
+//! the first restored view reuses WebKit's persistent cookie store and later
+//! isolated views inherit same-origin cookies from it in memory, so authentication
+//! survives restarts without persisting login tokens in this JSON state.
 
 use crate::state::AppState;
 use crate::{prefs, strip};
@@ -220,9 +220,7 @@ pub fn maybe_restore(app: &AppHandle) -> bool {
         }
     } else {
         #[cfg(target_os = "macos")]
-        for sw in &saved.windows {
-            crate::windows::restore_macos_window(app, sw);
-        }
+        crate::windows::restore_macos_windows(app, &saved.windows);
     }
     state.restoring.store(false, Ordering::SeqCst);
     // Guard against a total restore failure leaving the app with zero windows

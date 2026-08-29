@@ -41,6 +41,77 @@ static TITLE_SUFFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 pub const TABBING_ID: &str = "ai.get-hermes.HermesWebUIDesktop.main";
 
+/// The first restored macOS content view must use WebKit's default persistent
+/// data store so a valid WebUI login cookie survives app restarts. Every later
+/// restored view stays incognito for per-tab profile-cookie isolation and is
+/// seeded from an already-restored view before navigation.
+fn restored_macos_tab_incognito(has_existing_content: bool) -> bool {
+    has_existing_content
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RestoredProfileCookieAction<'a> {
+    Set(&'a str),
+    Clear,
+}
+
+fn restored_profile_cookie_action(profile: Option<&str>) -> RestoredProfileCookieAction<'_> {
+    match profile.filter(|value| !value.is_empty()) {
+        Some(value) => RestoredProfileCookieAction::Set(value),
+        None => RestoredProfileCookieAction::Clear,
+    }
+}
+
+fn normalized_http_origin(url: &url::Url) -> Option<(String, String, u16)> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    Some((
+        url.scheme().to_ascii_lowercase(),
+        url.host_str()?
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase(),
+        url.port_or_known_default()?,
+    ))
+}
+
+fn same_http_origin(left: &url::Url, right: &url::Url) -> bool {
+    normalized_http_origin(left)
+        .zip(normalized_http_origin(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
+fn cookie_scope_matches_url(
+    domain: Option<&str>,
+    path: Option<&str>,
+    secure: Option<bool>,
+    target: &url::Url,
+) -> bool {
+    let Some(host) = target
+        .host_str()
+        .map(|host| host.trim_matches(['[', ']']).to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let Some(raw_domain) = domain else {
+        return false;
+    };
+    let domain_cookie = raw_domain.starts_with('.');
+    let cookie_domain = raw_domain.trim_start_matches('.').to_ascii_lowercase();
+    let domain_matches =
+        host == cookie_domain || (domain_cookie && host.ends_with(&format!(".{cookie_domain}")));
+    if !domain_matches || (secure.unwrap_or(false) && target.scheme() != "https") {
+        return false;
+    }
+
+    let cookie_path = path.unwrap_or("/");
+    let request_path = target.path();
+    request_path == cookie_path
+        || (request_path.starts_with(cookie_path)
+            && (cookie_path.ends_with('/')
+                || request_path.as_bytes().get(cookie_path.len()) == Some(&b'/')))
+}
+
 /// The appearance every new window opens with — from the cached page
 /// background (7-day staleness), defaulting to dark. Port of the Swift app's
 /// `currentAppearance` seeded by loadCachedTheme(): windows must be born with
@@ -467,13 +538,31 @@ pub fn capture_window_profile(app: &AppHandle, label: &str) {
 
 /// Recreate one saved macOS window-group as native tabs (issue #18). The first
 /// tab is a standalone window; each subsequent tab joins its native tab group
-/// via the freeze-safe `add_tabbed_window` path (invariant #12). Every restored
-/// tab is incognito and re-seeded with its saved `hermes_profile` selector, so
-/// distinct profiles stay isolated and each reopens on the right one (auth
-/// logins are not persisted — an authed server re-prompts). The saved active
-/// tab is focused last. Runs on the orchestrator worker thread.
+/// via the freeze-safe `add_tabbed_window` path (invariant #12). The first
+/// restored content view uses the persistent cookie store; later views stay
+/// incognito for profile isolation and inherit login cookies from an existing
+/// view before their saved profile selector is applied. The saved active tab is
+/// focused last. Runs on the orchestrator worker thread.
 #[cfg(target_os = "macos")]
-pub fn restore_macos_window(app: &AppHandle, sw: &crate::session::SessionWindow) {
+struct MacosRestoreCookiePolicy {
+    source: Option<WebviewWindow>,
+    incognito: bool,
+}
+
+#[cfg(target_os = "macos")]
+pub fn restore_macos_windows(app: &AppHandle, saved_windows: &[crate::session::SessionWindow]) {
+    let mut cookie_donors: Vec<(url::Url, WebviewWindow)> = Vec::new();
+    for saved_window in saved_windows {
+        restore_macos_window(app, saved_window, &mut cookie_donors);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_macos_window(
+    app: &AppHandle,
+    sw: &crate::session::SessionWindow,
+    cookie_donors: &mut Vec<(url::Url, WebviewWindow)>,
+) {
     let p = prefs::load(app);
     let mut group_host: Option<WebviewWindow> = None;
     let mut built: Vec<WebviewWindow> = Vec::new();
@@ -483,9 +572,29 @@ pub fn restore_macos_window(app: &AppHandle, sw: &crate::session::SessionWindow)
             Err(_) => continue,
         };
         let frame = if i == 0 { sw.frame } else { None };
-        if let Some(win) =
-            build_restored_macos_tab(app, &p, url, tab.profile.clone(), group_host.clone(), frame)
-        {
+        let cookie_source = cookie_donors
+            .iter()
+            .find(|(donor_url, _)| same_http_origin(donor_url, &url))
+            .map(|(_, donor)| donor.clone());
+        let cookie_policy = MacosRestoreCookiePolicy {
+            incognito: restored_macos_tab_incognito(!content_windows(app).is_empty()),
+            source: cookie_source,
+        };
+        if let Some(win) = build_restored_macos_tab(
+            app,
+            &p,
+            url.clone(),
+            tab.profile.clone(),
+            group_host.clone(),
+            cookie_policy,
+            frame,
+        ) {
+            if !cookie_donors
+                .iter()
+                .any(|(donor_url, _)| same_http_origin(donor_url, &url))
+            {
+                cookie_donors.push((url, win.clone()));
+            }
             if group_host.is_none() {
                 group_host = Some(win.clone());
             }
@@ -508,6 +617,7 @@ fn build_restored_macos_tab(
     target: url::Url,
     profile: Option<String>,
     host: Option<WebviewWindow>,
+    cookie_policy: MacosRestoreCookiePolicy,
     frame: Option<[i64; 4]>,
 ) -> Option<WebviewWindow> {
     use tauri::TitleBarStyle;
@@ -525,6 +635,11 @@ fn build_restored_macos_tab(
     let load_host = p.ssh_host.clone();
     let load_port = p.local_port.clone();
     let seed_target = target.clone();
+    let cookie_target = target.clone();
+    let MacosRestoreCookiePolicy {
+        source: cookie_source,
+        incognito,
+    } = cookie_policy;
 
     let blank = url::Url::parse("about:blank").unwrap();
     let win = match WebviewWindowBuilder::new(app, &label, WebviewUrl::External(blank))
@@ -575,7 +690,7 @@ fn build_restored_macos_tab(
         .title_bar_style(TitleBarStyle::Overlay)
         .hidden_title(true)
         .tabbing_identifier(TABBING_ID)
-        .incognito(true)
+        .incognito(incognito)
         .build()
     {
         Ok(w) => w,
@@ -612,15 +727,81 @@ fn build_restored_macos_tab(
         });
     }
 
-    // Seed the profile selector into the (incognito) jar, then navigate to the
-    // saved URL — GCD-deferred so the cookie write's run-loop pump runs outside
-    // tao callouts (invariant #12), after the addTabbedWindow block (FIFO).
+    // Incognito restored views inherit the already-restored origin's cookies
+    // (especially the HttpOnly WebUI login cookie). Then overwrite only the
+    // profile selector and navigate. The first persistent view has no donor: it
+    // reads its login cookie directly from WebKit's default on-disk store.
+    // GCD-deferred so cookie run-loop pumps stay outside tao callouts
+    // (invariant #12), after the addTabbedWindow block (FIFO).
     let new_win = win.clone();
     crate::macos::run_on_main_async(move || {
-        if let Some(v) = profile {
-            if let Err(e) = new_win.set_cookie(crate::session::profile_cookie(&v)) {
-                log::warn!("restore: set_cookie failed for {}: {e}", new_win.label());
+        if let Some(source) = cookie_source {
+            match source.cookies() {
+                Ok(seed) => {
+                    let scoped: Vec<_> = seed
+                        .into_iter()
+                        .filter(|cookie| {
+                            cookie_scope_matches_url(
+                                cookie.domain(),
+                                cookie.path(),
+                                cookie.secure(),
+                                &cookie_target,
+                            )
+                        })
+                        .collect();
+                    let names: Vec<&str> = scoped.iter().map(|cookie| cookie.name()).collect();
+                    log::info!(
+                        "restore: seeding {} from {} — {} scoped cookie(s): {:?}",
+                        new_win.label(),
+                        source.label(),
+                        scoped.len(),
+                        names
+                    );
+                    for cookie in scoped {
+                        if let Err(e) = new_win.set_cookie(cookie) {
+                            log::warn!(
+                                "restore: inherited set_cookie failed for {}: {e}",
+                                new_win.label()
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!(
+                    "restore: cookie seed read failed for {}: {e}",
+                    new_win.label()
+                ),
             }
+        }
+        match restored_profile_cookie_action(profile.as_deref()) {
+            RestoredProfileCookieAction::Set(value) => {
+                if let Err(e) = new_win.set_cookie(crate::session::profile_cookie(value)) {
+                    log::warn!("restore: set_cookie failed for {}: {e}", new_win.label());
+                }
+            }
+            RestoredProfileCookieAction::Clear => match new_win.cookies() {
+                Ok(cookies) => {
+                    for cookie in cookies.into_iter().filter(|cookie| {
+                        cookie.name() == "hermes_profile"
+                            && cookie_scope_matches_url(
+                                cookie.domain(),
+                                cookie.path(),
+                                cookie.secure(),
+                                &cookie_target,
+                            )
+                    }) {
+                        if let Err(e) = new_win.delete_cookie(cookie) {
+                            log::warn!(
+                                "restore: profile delete_cookie failed for {}: {e}",
+                                new_win.label()
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!(
+                    "restore: profile cookie read failed for {}: {e}",
+                    new_win.label()
+                ),
+            },
         }
         if let Err(e) = new_win.navigate(seed_target) {
             log::error!("restore: navigate failed for {}: {e}", new_win.label());
@@ -1087,7 +1268,80 @@ pub fn open_whats_new(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_title, display_title, split_attention};
+    use super::{
+        clean_title, cookie_scope_matches_url, display_title, restored_macos_tab_incognito,
+        restored_profile_cookie_action, same_http_origin, split_attention,
+        RestoredProfileCookieAction,
+    };
+
+    #[test]
+    fn first_restored_macos_tab_uses_persistent_cookie_store() {
+        assert!(!restored_macos_tab_incognito(false));
+        assert!(restored_macos_tab_incognito(true));
+    }
+
+    #[test]
+    fn default_profile_restore_clears_stale_profile_cookie() {
+        assert_eq!(
+            restored_profile_cookie_action(None),
+            RestoredProfileCookieAction::Clear
+        );
+        assert_eq!(
+            restored_profile_cookie_action(Some("work")),
+            RestoredProfileCookieAction::Set("work")
+        );
+    }
+
+    #[test]
+    fn restored_cookie_donor_requires_exact_http_origin() {
+        let base = url::Url::parse("http://100.101.161.44:8787/session/a").unwrap();
+        let same = url::Url::parse("http://100.101.161.44:8787/session/b").unwrap();
+        let other_scheme = url::Url::parse("https://100.101.161.44:8787/session/b").unwrap();
+        let other_port = url::Url::parse("http://100.101.161.44:8788/session/b").unwrap();
+        let other_host = url::Url::parse("http://100.101.161.45:8787/session/b").unwrap();
+
+        assert!(same_http_origin(&base, &same));
+        assert!(!same_http_origin(&base, &other_scheme));
+        assert!(!same_http_origin(&base, &other_port));
+        assert!(!same_http_origin(&base, &other_host));
+    }
+
+    #[test]
+    fn restored_cookie_copy_filters_to_destination_scope() {
+        let http = url::Url::parse("http://100.101.161.44:8787/session/a").unwrap();
+        let https = url::Url::parse("https://100.101.161.44:8787/session/a").unwrap();
+
+        assert!(cookie_scope_matches_url(
+            Some("100.101.161.44"),
+            Some("/"),
+            Some(false),
+            &http
+        ));
+        assert!(!cookie_scope_matches_url(
+            Some("100.101.161.45"),
+            Some("/"),
+            Some(false),
+            &http
+        ));
+        assert!(!cookie_scope_matches_url(
+            Some("100.101.161.44"),
+            Some("/other"),
+            Some(false),
+            &http
+        ));
+        assert!(!cookie_scope_matches_url(
+            Some("100.101.161.44"),
+            Some("/"),
+            Some(true),
+            &http
+        ));
+        assert!(cookie_scope_matches_url(
+            Some("100.101.161.44"),
+            Some("/"),
+            Some(true),
+            &https
+        ));
+    }
 
     #[test]
     fn splits_pending_attention_marker() {
