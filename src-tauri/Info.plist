@@ -2,9 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Hermes WebUI Desktop needs microphone access for voice input in the Hermes web UI.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Hermes WebUI Desktop needs camera access if the Hermes web UI requests it.</string>
+  <!-- The desktop shell explicitly supports plain-http WebUI targets on
+       localhost, Tailscale, LAN, and SSH forwards. Scope the ATS exception to
+       embedded web content; native Rust HTTP probes keep normal TLS policy. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <false/>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+  </dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Hermes WebUI Desktop needs camera access if the Hermes web UI requests it.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Hermes WebUI Desktop needs microphone access for voice input in the Hermes web UI.</string>
 </dict>
 </plist>

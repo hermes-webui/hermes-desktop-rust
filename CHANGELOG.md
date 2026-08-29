@@ -30,6 +30,15 @@ and restored-session fixes, refresh-all, and quality-of-life items.
 
 ### Fixed
 
+- **macOS: WebUI password sessions now survive app restarts.** The restored
+  first tab uses WebKit's persistent cookie store instead of an ephemeral one,
+  while later tabs remain isolated and inherit only the already-authenticated
+  origin cookies before applying their own profile selector. This preserves
+  per-tab profile isolation without asking for the WebUI password on every
+  launch.
+- **macOS: direct HTTP WebUI targets load again.** The app now allows plain-HTTP
+  content inside its embedded WebKit view for localhost, Tailscale, LAN, and SSH
+  forwards, while native Rust probes keep their normal TLS verification policy.
 - **Wayland: huge empty space above the WebUI** (issue #80). The v0.6.8 fix
   for the X11 gap (#67) passes physical child-webview coordinates to defeat
   wry's bogus X11 DPI derivation — but it applied on ALL Linux, and on native
