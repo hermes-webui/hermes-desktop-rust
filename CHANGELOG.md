@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Windows: WebView2 copies now enter Clipboard History** — WebView2 can paste
+  copied text successfully while Windows omits it from Win+V because Chromium's
+  embedded window owns the clipboard. The desktop shell now republishes WebUI
+  copy-button and normal text-selection copies through the native Windows
+  clipboard owner.
+
 ## [v0.7.0] — 2026-07-18
 
 An issue-sweep release: nine tracker items land at once — Wayland layout,

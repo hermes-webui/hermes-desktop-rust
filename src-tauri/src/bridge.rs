@@ -98,10 +98,56 @@ const NOTIFICATION_SHIM: &str = r##"
 
 /// S3 — Web Speech suppression → webui falls back to MediaRecorder + /api/transcribe.
 const SPEECH_SUPPRESS: &str = r##"
-  try {
-    window.SpeechRecognition = undefined;
-    window.webkitSpeechRecognition = undefined;
-  } catch (e) {}
+try {
+  window.SpeechRecognition = undefined;
+  window.webkitSpeechRecognition = undefined;
+} catch (e) {}
+"##;
+
+/// Windows WebView2 clipboard-history bridge. WebView2 can write data that
+/// pastes normally while Windows Clipboard History (Win+V) never records it,
+/// because the embedded Chromium window owns the clipboard. WebUI copy
+/// buttons funnel through `_copyText`, so wrapping that function routes the
+/// same plain text through the native app's clipboard owner instead.
+const WINDOWS_CLIPBOARD_BRIDGE: &str = r##"
+(function () {
+  var wrapped = null;
+  function install() {
+    try {
+      var current = window._copyText;
+      if (typeof current !== 'function' || current === wrapped || current.__hermesNativeClipboard) return;
+      wrapped = function (text) {
+        var value = String(text == null ? '' : text);
+        try {
+          var prior = current(value);
+          if (prior && typeof prior.catch === 'function') prior.catch(function () {});
+        } catch (e) {}
+        EMIT('clipboard-write', value);
+        return Promise.resolve();
+      };
+      wrapped.__hermesNativeClipboard = true;
+      window._copyText = wrapped;
+    } catch (e) {}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
+  else install();
+  setInterval(install, 1000);
+})();
+"##;
+
+/// Also capture ordinary Ctrl+C / context-menu selection copies. Capture the
+/// selected text in the copy event, then defer the native event by one task so
+/// WebView2 completes its write first and the desktop process becomes the final
+/// clipboard owner.
+const WINDOWS_COPY_EVENT_BRIDGE: &str = r##"
+(function () {
+  document.addEventListener('copy', function () {
+    try {
+      var text = window.getSelection ? String(window.getSelection() || '') : '';
+      if (text) setTimeout(function () { EMIT('clipboard-write', text); }, 0);
+    } catch (e) {}
+  }, true);
+})();
 "##;
 
 /// S1 — paste suppression (mac/linux): the native Cmd+V path owns paste.
@@ -625,6 +671,10 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
         // indicator from MACOS_PROFILE_REPORTER above (#31, #44).
         parts.push(PROFILE_REPORTER);
     }
+    if cfg!(target_os = "windows") {
+        parts.push(WINDOWS_CLIPBOARD_BRIDGE);
+        parts.push(WINDOWS_COPY_EVENT_BRIDGE);
+    }
     // Busy state feeds the strip spinner on Win/Linux (#46) AND the native
     // tab-title "⟳" adornment on macOS (#65) — inject everywhere.
     parts.push(BUSY_REPORTER);
@@ -738,6 +788,13 @@ pub fn install(app: &AppHandle) {
                             .title(title)
                             .body(body)
                             .show();
+                    }
+                }
+            }
+            "clipboard-write" => {
+                if let Some(text) = payload["value"].as_str() {
+                    if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                        log::warn!("clipboard: native write failed: {e}");
                     }
                 }
             }
@@ -962,9 +1019,22 @@ fn dedupe_decide(
 
 #[cfg(test)]
 mod tests {
-    use super::{dedupe_decide, NOTIFY_DEDUPE_WINDOW};
+    use super::{dedupe_decide, init_script, NOTIFY_DEDUPE_WINDOW};
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn native_clipboard_bridge_is_scoped_to_windows() {
+        let script = init_script("tab-1-1", "#000000", false);
+        assert_eq!(
+            script.contains("EMIT('clipboard-write', value)"),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            script.contains("setTimeout(function () { EMIT('clipboard-write', text); }, 0)"),
+            cfg!(target_os = "windows")
+        );
+    }
 
     #[test]
     fn duplicate_notifications_suppressed_within_window() {
