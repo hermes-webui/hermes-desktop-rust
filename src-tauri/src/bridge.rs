@@ -106,47 +106,84 @@ try {
 
 /// Windows WebView2 clipboard-history bridge. WebView2 can write data that
 /// pastes normally while Windows Clipboard History (Win+V) never records it,
-/// because the embedded Chromium window owns the clipboard. WebUI copy
-/// buttons funnel through `_copyText`, so wrapping that function routes the
-/// same plain text through the native app's clipboard owner instead.
+/// because the embedded Chromium window owns the clipboard. WebView2's browser
+/// process writes the clipboard, but since the webview window is the *owner*,
+/// Windows omits the entry from its history ring.
+///
+/// Strategy: intercept every programmatic clipboard write at the single choke
+/// point — `navigator.clipboard.writeText` — so we catch `_copyText`,
+/// `_copyTextWithFallback`, and any direct callers without coupling to a
+/// specific helper. Also listen for `copy` events (Ctrl+C, context-menu) in the
+/// bubble phase and read the *post-handler* `clipboardData` (after
+/// `_handleMarkdownTableCopy` has set sanitized payloads), preserving WebUI's
+/// text/html + text/plain flavors instead of clobbering them with raw
+/// `getSelection()`. Both paths feed into a single emit with dedup + a
+/// `setTimeout(0)` so the browser write settles before the native republish.
 const WINDOWS_CLIPBOARD_BRIDGE: &str = r##"
 (function () {
-  var wrapped = null;
-  function install() {
+  var lastText = '';
+  function emitNative(value) {
+    var v = String(value == null ? '' : value);
+    if (v === '' || v === lastText) return;
+    lastText = v;
+    EMIT('clipboard-write', v);
+  }
+
+  function installClipboard() {
     try {
-      var current = window._copyText;
-      if (typeof current !== 'function' || current === wrapped || current.__hermesNativeClipboard) return;
-      wrapped = function (text) {
-        var value = String(text == null ? '' : text);
-        try {
-          var prior = current(value);
-          if (prior && typeof prior.catch === 'function') prior.catch(function () {});
-        } catch (e) {}
-        EMIT('clipboard-write', value);
-        return Promise.resolve();
+      if (!navigator.clipboard) return;
+      if (navigator.clipboard.__hermesPatched) return;
+      var orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+      navigator.clipboard.__hermesPatched = orig;
+      navigator.clipboard.writeText = function (text) {
+        var v = String(text == null ? '' : text);
+        var p = orig(v);
+        // Emit after the browser write settles so the desktop process
+        // becomes the clipboard owner (fixes the race condition).
+        if (p && typeof p.then === 'function') {
+          p.then(function () { emitNative(v); }, function () { emitNative(v); });
+        } else {
+          emitNative(v);
+        }
+        return p;
       };
-      wrapped.__hermesNativeClipboard = true;
-      window._copyText = wrapped;
     } catch (e) {}
   }
+
+  function installCopyListener() {
+    // Bubble phase (default = no true): runs AFTER capture-phase handlers and
+    // after same-target bubble listeners registered earlier. Reading
+    // clipboardData here captures the post-handler payload set by
+    // _handleMarkdownTableCopy (text/html + text/plain), so we don't
+    // overwrite sanitized table content with raw getSelection().
+    try {
+      document.addEventListener('copy', function (event) {
+        try {
+          var cd = event.clipboardData;
+          var text = '';
+          if (cd && typeof cd.getData === 'function') text = cd.getData('text/plain') || '';
+          if (text === '' && window.getSelection) {
+            text = String(window.getSelection() || '');
+          }
+          if (text) {
+            // Defer so all copy handlers (including async setData callers)
+            // have finished; the event.clipboardData reflects the final payload.
+            setTimeout(function () { emitNative(text); }, 0);
+          }
+        } catch (e) {}
+      }, false);
+    } catch (e) {}
+  }
+
+  function install() {
+    installClipboard();
+    installCopyListener();
+  }
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
   else install();
+  // Poll so we catch pages where navigator.clipboard or document is late-loaded.
   setInterval(install, 1000);
-})();
-"##;
-
-/// Also capture ordinary Ctrl+C / context-menu selection copies. Capture the
-/// selected text in the copy event, then defer the native event by one task so
-/// WebView2 completes its write first and the desktop process becomes the final
-/// clipboard owner.
-const WINDOWS_COPY_EVENT_BRIDGE: &str = r##"
-(function () {
-  document.addEventListener('copy', function () {
-    try {
-      var text = window.getSelection ? String(window.getSelection() || '') : '';
-      if (text) setTimeout(function () { EMIT('clipboard-write', text); }, 0);
-    } catch (e) {}
-  }, true);
 })();
 "##;
 
@@ -655,25 +692,34 @@ const MACOS_PROFILE_REPORTER: &str = r##"
 "##;
 
 /// Assemble the per-window initialization script.
-pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
+///
+/// `target_os` is `"windows"`, `"macos"`, or `"linux"` — passed explicitly so
+/// unit tests can verify both Windows and non-Windows branches regardless of
+/// which platform the test happens to run on (Issue #6: the old test only
+/// asserted against `cfg!(target_os = "windows")`, so it could never fail on a
+/// non-Windows CI host). In production this is always called with the real
+/// target triple (see `install`).
+pub fn init_script(target_os: &str, label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     let mut parts: Vec<&str> = vec![HELPER, PRE_PAINT, NOTIFICATION_SHIM, SPEECH_SUPPRESS];
-    if cfg!(any(target_os = "macos", target_os = "linux")) {
+    let is_windows = target_os == "windows";
+    let is_macos = target_os == "macos";
+    let is_unix = is_macos || target_os == "linux";
+    if is_unix {
         parts.push(PASTE_SUPPRESS);
     }
-    if cfg!(target_os = "macos") {
+    if is_macos {
         parts.push(MACOS_TITLEBAR);
         // Surface the active profile in the native tab title (issue #44).
         parts.push(MACOS_PROFILE_REPORTER);
     }
-    if cfg!(not(target_os = "macos")) {
+    if !is_macos {
         parts.push(SHORTCUT_FORWARDER);
         // Profile dot is strip-only (Windows/Linux); macOS gets its profile
         // indicator from MACOS_PROFILE_REPORTER above (#31, #44).
         parts.push(PROFILE_REPORTER);
     }
-    if cfg!(target_os = "windows") {
+    if is_windows {
         parts.push(WINDOWS_CLIPBOARD_BRIDGE);
-        parts.push(WINDOWS_COPY_EVENT_BRIDGE);
     }
     // Busy state feeds the strip spinner on Win/Linux (#46) AND the native
     // tab-title "⟳" adornment on macOS (#65) — inject everywhere.
@@ -682,7 +728,7 @@ pub fn init_script(label: &str, pre_paint_hex: &str, is_ssh: bool) -> String {
     parts.push(ROUTE_REPORTER);
     parts.push(WINDOW_OPEN);
     parts.push(FIND_BAR);
-    if cfg!(any(target_os = "macos", target_os = "linux")) {
+    if is_unix {
         parts.push(DOWNLOAD_BRIDGE);
     }
     if is_ssh {
@@ -791,6 +837,12 @@ pub fn install(app: &AppHandle) {
                     }
                 }
             }
+            // Windows-only: the clipboard-write emitter (WINDOWS_CLIPBOARD_BRIDGE)
+            // is injected on Windows only so the desktop process can republish
+            // clipboard writes into the Windows Clipboard History ring (Win+V).
+            // macOS/Linux use native clipboard management; gated to Windows to
+            // match the JS injection scope.
+            #[cfg(target_os = "windows")]
             "clipboard-write" => {
                 if let Some(text) = payload["value"].as_str() {
                     if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
@@ -1025,14 +1077,26 @@ mod tests {
 
     #[test]
     fn native_clipboard_bridge_is_scoped_to_windows() {
-        let script = init_script("tab-1-1", "#000000", false);
-        assert_eq!(
-            script.contains("EMIT('clipboard-write', value)"),
-            cfg!(target_os = "windows")
+        // Issue #6: parameterize target_os so the test verifies BOTH branches
+        // regardless of which OS the CI runs on. The old test used
+        // cfg!(target_os = "windows"), which meant it could never fail on a
+        // non-Windows host — it would just assert `false == false` and pass.
+        let win_script = init_script("windows", "tab-1-1", "#000000", false);
+        assert!(
+            win_script.contains("EMIT('clipboard-write', v)"),
+            "Windows script must contain the writeText interception emit"
         );
-        assert_eq!(
-            script.contains("setTimeout(function () { EMIT('clipboard-write', text); }, 0)"),
-            cfg!(target_os = "windows")
+
+        let mac_script = init_script("macos", "tab-1-1", "#000000", false);
+        assert!(
+            !mac_script.contains("EMIT('clipboard-write', v)"),
+            "macOS script must NOT contain the clipboard bridge emit"
+        );
+
+        let linux_script = init_script("linux", "tab-1-1", "#000000", false);
+        assert!(
+            !linux_script.contains("EMIT('clipboard-write', v)"),
+            "Linux script must NOT contain the clipboard bridge emit"
         );
     }
 

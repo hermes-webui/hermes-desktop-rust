@@ -47,15 +47,33 @@ No searched PR or issue supplied the missing WebView2-to-native Windows clipboar
 
 The local `src-tauri/src/bridge.rs` proposal:
 
-1. Injects a Windows-only wrapper around `window._copyText`, covering WebUI copy buttons and other helper-driven programmatic copies.
-2. Adds a Windows-only `copy` event listener, covering selection, keyboard, and context-menu copy paths.
-3. Emits a `clipboard-write` message through the existing desktop bridge.
-4. Handles `clipboard-write` in Rust with `arboard::Clipboard::set_text`.
-5. Includes a test that checks the native clipboard bridge is injected only on Windows.
+1. **Intercepts `navigator.clipboard.writeText`** — the single choke point for all
+   programmatic clipboard writes (`_copyText`, `_copyTextWithFallback`, and direct
+   callers). This replaces the initial idea of wrapping `window._copyText` (Issue #2:
+   `_copyText` is not an explicit `window` contract — it incidentally lands on `window`
+   only because `static/ui.js` loads in script mode). By intercepting the Clipboard API
+   instead, we catch every caller regardless of which helper function they use.
+2. **Listens for `copy` events in bubble phase** — covers Ctrl+C, context-menu, and
+   selection-based copies. Reads the **post-handler `clipboardData`** (after
+   `_handleMarkdownTableCopy` has set sanitized `text/html` + `text/plain` flavors),
+   preserving WebUI's Markdown table sanitization instead of clobbering it with raw
+   `getSelection()` (Issue #1).
+3. **Emits a `clipboard-write` message** through the existing desktop bridge with
+   deduplication: a `lastText` guard prevents double-emits when both paths fire for the
+   same copy, and `setTimeout(0)` defers the emit until after the browser's own
+   clipboard write settles (Issue #4: the old wrapper swallowed promise rejections and
+   raced the native write).
+4. **Handles `clipboard-write` in Rust with `arboard::Clipboard::set_text`**, gated with
+   `#[cfg(target_os = "windows")]` to match the JS injection scope (Issue #5). The
+   `arboard` crate is now a Windows-only dependency in `Cargo.toml`.
+5. **Test is parameterized** by an explicit `target_os` string argument to `init_script`,
+   so it verifies all three branches (windows/macOS/linux) regardless of CI host
+   (Issue #6: the old test used `cfg!(target_os = "windows")` which could only ever pass
+   as `false == false` on non-Windows CI).
 
-This is better scoped than modifying individual WebUI copy call sites. The defect is specific to the Windows desktop host and its WebView2/native clipboard interaction, while the WebUI also runs in ordinary browsers and should remain platform-neutral.
-
-Using both interception paths is justified. Wrapping only `_copyText` could miss ordinary DOM selection or context-menu copies. Listening only for `copy` could miss programmatic clipboard writes that do not dispatch a copy event.
+This is better scoped than modifying individual WebUI copy call sites. The defect is
+specific to the Windows desktop host and its WebView2/native clipboard interaction, while
+the WebUI also runs in ordinary browsers and should remain platform-neutral.
 
 ## Recommendation
 
@@ -70,7 +88,9 @@ Keep it Windows-scoped and retain both the `_copyText` wrapper and `copy` event 
 - repeated identical copies;
 - copies after navigation or page reload.
 
-Also check whether one user action can trigger both interception paths. If so, add lightweight deduplication to avoid writing the same value twice. The existing unit test confirms platform scoping, but a Windows manual or end-to-end test is still needed to prove that the native write reaches Clipboard History.
+Also check whether one user action can trigger both interception paths — the dedup
+`lastText` guard should prevent double-writes, but a Windows manual or end-to-end test
+is still needed to confirm that the native write reaches Clipboard History.
 
 ## Primary-source URLs
 

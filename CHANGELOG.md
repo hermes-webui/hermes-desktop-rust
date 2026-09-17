@@ -8,7 +8,11 @@
   copied text successfully while Windows omits it from Win+V because Chromium's
   embedded window owns the clipboard. The desktop shell now republishes WebUI
   copy-button and normal text-selection copies through the native Windows
-  clipboard owner.
+  clipboard owner. The bridge intercepts `navigator.clipboard.writeText` (the
+  single choke point covering `_copyText`, `_copyTextWithFallback`, and direct
+  callers) and `copy` events (Ctrl+C, context-menu), with deduplication and a
+  post-handler `clipboardData` read that preserves WebUI's sanitized Markdown
+  table payloads instead of clobbering them with raw `getSelection()`.
 
 ## [v0.7.0] — 2026-07-18
 
