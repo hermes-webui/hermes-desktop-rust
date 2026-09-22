@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Linux: the WebUI no longer occupies only the lower half of the window** (issues #80/#83). Tauri 2.11 inserts child webviews into a GTK box with `expand=true` and ignores their requested bounds, so the 38px tab strip and content webview split the available height on both X11 and Wayland. Linux now gives the strip a fixed 38px allocation and lets only the content webview expand. Other platforms are unaffected.
+
 ## [v0.7.0] — 2026-07-18
 
 An issue-sweep release: nine tracker items land at once — Wayland layout,
