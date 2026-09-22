@@ -1130,9 +1130,11 @@ pub fn session_windows(app: &AppHandle) -> Vec<crate::session::SessionWindow> {
 
 /// Recompute strip + active tab bounds (window Resized handler).
 pub fn layout(app: &AppHandle, window_label: &str) {
-    // Linux: re-fitting GTK child webviews crashes natively (smoke v3/v5
-    // finding) — skip entirely. Cost: window resizes don't re-fit webviews
-    // there yet; tracked for the next sprint (upstream wry GTK geometry).
+    // Linux: explicit set_position/set_size on GTK child webviews crashes
+    // natively (smoke v3/v5 finding), so skip the geometry calls entirely.
+    // Resizes still reflow on Linux: `apply_linux_child_packing` gives the
+    // strip a fixed 38px and lets the content webview expand in the GtkBox,
+    // so GTK re-allocates both children itself when the window resizes.
     if cfg!(target_os = "linux") {
         return;
     }
