@@ -110,23 +110,34 @@ try {
 /// process writes the clipboard, but since the webview window is the *owner*,
 /// Windows omits the entry from its history ring.
 ///
-/// Strategy: intercept every programmatic clipboard write at the single choke
-/// point — `navigator.clipboard.writeText` — so we catch `_copyText`,
-/// `_copyTextWithFallback`, and any direct callers without coupling to a
-/// specific helper. Also listen for `copy` events (Ctrl+C, context-menu) in the
-/// bubble phase and read the *post-handler* `clipboardData` (after
-/// `_handleMarkdownTableCopy` has set sanitized payloads), preserving WebUI's
-/// text/html + text/plain flavors instead of clobbering them with raw
-/// `getSelection()`. Both paths feed into a single emit with dedup + a
-/// `setTimeout(0)` so the browser write settles before the native republish.
+/// Strategy (content-free): the page never hands clipboard bytes across the
+/// boundary. On any programmatic write (`navigator.clipboard.writeText`, the
+/// single choke point covering `_copyText`, `_copyTextWithFallback`, and direct
+/// callers) OR any `copy` event (Ctrl+C, context-menu, form-control copies),
+/// we emit a *payloadless* `clipboard-republish` signal. The native side then
+/// reads back whatever WebView2 just wrote — both `text/plain` and `text/html`
+/// flavors — and re-publishes it so the desktop process becomes the clipboard
+/// owner (Win+V records it), preserving WebUI's sanitized Markdown-table HTML.
+///
+/// - Rejected `writeText` calls do NOT signal: the republish is attached to the
+///   fulfillment branch only, and the rejection propagates untouched so the
+///   caller's own `.catch` still fires.
+/// - The `copy` listener is bound once (idempotence guard) despite the periodic
+///   `install()` re-arm for late-loaded pages, so listeners never accumulate.
+/// - Reading the live clipboard (not `getSelection()`) captures form-control
+///   selections and the post-handler payload set by `_handleMarkdownTableCopy`.
 const WINDOWS_CLIPBOARD_BRIDGE: &str = r##"
 (function () {
-  var lastText = '';
-  function emitNative(value) {
-    var v = String(value == null ? '' : value);
-    if (v === '' || v === lastText) return;
-    lastText = v;
-    EMIT('clipboard-write', v);
+  var pending = false;
+  function signal() {
+    // Coalesce bursts into one native republish per tick, and defer so the
+    // browser's own clipboard write settles first (we read it back natively).
+    if (pending) return;
+    pending = true;
+    setTimeout(function () {
+      pending = false;
+      EMIT('clipboard-republish', '');
+    }, 0);
   }
 
   function installClipboard() {
@@ -136,42 +147,27 @@ const WINDOWS_CLIPBOARD_BRIDGE: &str = r##"
       var orig = navigator.clipboard.writeText.bind(navigator.clipboard);
       navigator.clipboard.__hermesPatched = orig;
       navigator.clipboard.writeText = function (text) {
-        var v = String(text == null ? '' : text);
-        var p = orig(v);
-        // Emit after the browser write settles so the desktop process
-        // becomes the clipboard owner (fixes the race condition).
+        var p = orig(text);
         if (p && typeof p.then === 'function') {
-          p.then(function () { emitNative(v); }, function () { emitNative(v); });
-        } else {
-          emitNative(v);
+          // Republish only after the write actually succeeds. A rejected write
+          // must never reach the OS clipboard; returning p.then with a lone
+          // fulfillment handler passes the rejection through to the caller.
+          return p.then(function (v) { signal(); return v; });
         }
+        signal();
         return p;
       };
     } catch (e) {}
   }
 
   function installCopyListener() {
-    // Bubble phase (default = no true): runs AFTER capture-phase handlers and
-    // after same-target bubble listeners registered earlier. Reading
-    // clipboardData here captures the post-handler payload set by
-    // _handleMarkdownTableCopy (text/html + text/plain), so we don't
-    // overwrite sanitized table content with raw getSelection().
     try {
-      document.addEventListener('copy', function (event) {
-        try {
-          var cd = event.clipboardData;
-          var text = '';
-          if (cd && typeof cd.getData === 'function') text = cd.getData('text/plain') || '';
-          if (text === '' && window.getSelection) {
-            text = String(window.getSelection() || '');
-          }
-          if (text) {
-            // Defer so all copy handlers (including async setData callers)
-            // have finished; the event.clipboardData reflects the final payload.
-            setTimeout(function () { emitNative(text); }, 0);
-          }
-        } catch (e) {}
-      }, false);
+      if (document.__hermesCopyBound) return;
+      document.__hermesCopyBound = true;
+      // Bubble phase: runs after page copy handlers (incl.
+      // _handleMarkdownTableCopy), so the native read-back sees the final,
+      // sanitized clipboard payload rather than raw selection text.
+      document.addEventListener('copy', function () { signal(); }, false);
     } catch (e) {}
   }
 
@@ -752,6 +748,80 @@ pub const THEME_SYNC_EVAL: &str = r##"
   })();
 "##;
 
+/// Windows: re-publish whatever WebView2 just wrote to the clipboard so the
+/// desktop process becomes the owner and Windows records the entry in Clipboard
+/// History (Win+V). Reads back both text/plain and text/html so sanitized
+/// Markdown-table HTML (set by `_handleMarkdownTableCopy`) survives; writes HTML
+/// with the plain text as its alt flavor when present, else plain text alone.
+///
+/// Guards:
+/// - Size cap: refuse absurd payloads (a runaway page shouldn't be able to pin
+///   the clipboard with megabytes of text).
+/// - Rate limit: at most one republish per `CLIPBOARD_REPUBLISH_MIN_GAP`, so a
+///   misbehaving page firing `copy` in a loop can't thrash the OS clipboard.
+/// - Owner check: if we read back exactly what we last wrote, skip — avoids a
+///   feedback loop where our own write re-triggers a copy observer.
+#[cfg(target_os = "windows")]
+fn republish_clipboard() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Reject clipboard payloads larger than this (bytes). Generous for text
+    /// and tables; a guard against runaway pages, not a real-content limit.
+    const CLIPBOARD_MAX_BYTES: usize = 4 * 1024 * 1024;
+    /// Minimum gap between native republishes; collapses copy-event floods.
+    const CLIPBOARD_REPUBLISH_MIN_GAP: Duration = Duration::from_millis(150);
+
+    static LAST: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("clipboard: open failed: {e}");
+            return;
+        }
+    };
+
+    // text/plain is the flavor that must exist for a meaningful entry.
+    let text = match clipboard.get_text() {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => return, // empty clipboard — nothing to republish
+        Err(e) => {
+            log::warn!("clipboard: read-back failed: {e}");
+            return;
+        }
+    };
+
+    if text.len() > CLIPBOARD_MAX_BYTES {
+        log::warn!(
+            "clipboard: payload too large ({} bytes), skipping",
+            text.len()
+        );
+        return;
+    }
+
+    {
+        let mut guard = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((when, last_text)) = guard.as_ref() {
+            // Skip our own echo, and throttle bursts.
+            if last_text == &text && when.elapsed() < CLIPBOARD_REPUBLISH_MIN_GAP {
+                return;
+            }
+        }
+        *guard = Some((Instant::now(), text.clone()));
+    }
+
+    // Preserve the HTML flavor when the page set one (Markdown tables), with the
+    // plain text as the alt fallback for consumers that don't take HTML.
+    let result = match clipboard.get().html() {
+        Ok(html) if !html.is_empty() => clipboard.set_html(html, Some(text.clone())),
+        _ => clipboard.set_text(text),
+    };
+    if let Err(e) = result {
+        log::warn!("clipboard: republish write failed: {e}");
+    }
+}
+
 /// Wire the bridge listener — pages → native.
 pub fn install(app: &AppHandle) {
     let handle = app.clone();
@@ -837,17 +907,21 @@ pub fn install(app: &AppHandle) {
                     }
                 }
             }
-            // Windows-only: the clipboard-write emitter (WINDOWS_CLIPBOARD_BRIDGE)
-            // is injected on Windows only so the desktop process can republish
-            // clipboard writes into the Windows Clipboard History ring (Win+V).
-            // macOS/Linux use native clipboard management; gated to Windows to
-            // match the JS injection scope.
+            // Windows-only: the clipboard-republish signal (WINDOWS_CLIPBOARD_BRIDGE)
+            // is injected on Windows only. It carries NO payload — the page tells
+            // us "a copy just happened", and the native side reads WebView2's own
+            // clipboard write back and re-publishes it so the desktop process
+            // becomes the clipboard owner (Win+V records it) while preserving both
+            // the text/plain and text/html flavors. macOS/Linux use native
+            // clipboard management; gated to Windows to match the JS injection.
             #[cfg(target_os = "windows")]
-            "clipboard-write" => {
-                if let Some(text) = payload["value"].as_str() {
-                    if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                        log::warn!("clipboard: native write failed: {e}");
-                    }
+            "clipboard-republish" => {
+                // Trust only real content tabs — never a subframe or an
+                // unexpected window label writing the OS clipboard on our behalf.
+                if !(label.starts_with("tab-") || label.starts_with("main-")) {
+                    log::warn!("clipboard: ignoring republish from label {label:?}");
+                } else {
+                    republish_clipboard();
                 }
             }
             "open-external" => {
@@ -1083,20 +1157,26 @@ mod tests {
         // non-Windows host — it would just assert `false == false` and pass.
         let win_script = init_script("windows", "tab-1-1", "#000000", false);
         assert!(
-            win_script.contains("EMIT('clipboard-write', v)"),
-            "Windows script must contain the writeText interception emit"
+            win_script.contains("EMIT('clipboard-republish', '')"),
+            "Windows script must emit the content-free clipboard-republish signal"
+        );
+        // The old design shipped clipboard bytes across the boundary; the fix is
+        // content-free, so no payload-carrying clipboard emit may remain.
+        assert!(
+            !win_script.contains("EMIT('clipboard-write'"),
+            "Windows script must NOT ship clipboard bytes across the bridge"
         );
 
         let mac_script = init_script("macos", "tab-1-1", "#000000", false);
         assert!(
-            !mac_script.contains("EMIT('clipboard-write', v)"),
-            "macOS script must NOT contain the clipboard bridge emit"
+            !mac_script.contains("clipboard-republish"),
+            "macOS script must NOT contain the clipboard bridge"
         );
 
         let linux_script = init_script("linux", "tab-1-1", "#000000", false);
         assert!(
-            !linux_script.contains("EMIT('clipboard-write', v)"),
-            "Linux script must NOT contain the clipboard bridge emit"
+            !linux_script.contains("clipboard-republish"),
+            "Linux script must NOT contain the clipboard bridge"
         );
     }
 
