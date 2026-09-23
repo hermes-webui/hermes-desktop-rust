@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
 
 ### Fixed
 
@@ -13,6 +13,7 @@
   callers) and `copy` events (Ctrl+C, context-menu), with deduplication and a
   post-handler `clipboardData` read that preserves WebUI's sanitized Markdown
   table payloads instead of clobbering them with raw `getSelection()`.
+- **Linux: the WebUI no longer occupies only the lower half of the window** (issues #80/#83). Tauri 2.11 inserts child webviews into a GTK box with `expand=true` and ignores their requested bounds, so the 38px tab strip and content webview split the available height on both X11 and Wayland. Linux now gives the strip a fixed 38px allocation and lets only the content webview expand. Other platforms are unaffected.
 
 ## [v0.7.0] — 2026-07-18
 

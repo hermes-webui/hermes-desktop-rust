@@ -22,6 +22,48 @@ use tauri::{
 
 pub const STRIP_HEIGHT: f64 = 38.0;
 
+#[cfg(any(test, target_os = "linux"))]
+fn linux_child_packing(is_strip: bool) -> (bool, i32) {
+    if is_strip {
+        (false, STRIP_HEIGHT as i32)
+    } else {
+        (true, -1)
+    }
+}
+
+/// Tauri 2.11's Linux `WindowChild` path calls `build_gtk(default_vbox)`;
+/// wry then packs every webview into that GtkBox with expand=true and ignores
+/// the requested child bounds. This behavior is shared by the X11 and Wayland
+/// GTK backends: with the strip and content both expanding, they split the
+/// window vertically and the oversized strip appears as a large empty gap.
+/// Correct the GTK child packing directly on every Linux backend: fixed 38px
+/// strip, expanding content. Keep backend-specific coordinate compensation in
+/// `child_position` and `child_size`; packing itself is coordinate-free.
+#[cfg(target_os = "linux")]
+fn apply_linux_child_packing(webview: &Webview<Wry>, is_strip: bool) {
+    let (expand, height) = linux_child_packing(is_strip);
+    if let Err(e) = webview.with_webview(move |native| {
+        use gtk::prelude::*;
+
+        let child = native.inner();
+        child.set_hexpand(true);
+        child.set_vexpand(expand);
+        child.set_size_request(-1, height);
+
+        if let Some(parent) = child
+            .parent()
+            .and_then(|widget| widget.downcast::<gtk::Box>().ok())
+        {
+            parent.set_child_packing(&child, expand, true, 0, gtk::PackType::Start);
+            parent.queue_resize();
+        } else {
+            log::error!("strip: Linux child webview parent is not a GtkBox");
+        }
+    }) {
+        log::error!("strip: failed to schedule Linux GTK child packing: {e}");
+    }
+}
+
 /// Convert a logical child-webview position to the unit the platform's wry
 /// backend wants for `add_child` / `set_position`.
 ///
@@ -318,12 +360,17 @@ fn build_strip_window(
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or(LogicalSize::new(1280.0, 830.0));
-    if let Err(e) = win.add_child(
+    match win.add_child(
         swb,
         child_position(0.0, 0.0, scale),
         child_size(logical.width, STRIP_HEIGHT, scale),
     ) {
-        log::error!("strip: strip webview failed: {e}");
+        Ok(strip_webview) => {
+            #[cfg(target_os = "linux")]
+            apply_linux_child_packing(&strip_webview, true);
+            drop(strip_webview);
+        }
+        Err(e) => log::error!("strip: strip webview failed: {e}"),
     }
 
     log::info!("strip: window {label} built, strip webview added");
@@ -736,6 +783,8 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
             return;
         }
     };
+    #[cfg(target_os = "linux")]
+    apply_linux_child_packing(&webview, false);
 
     // Seed the FRESH jar, then load the real target — cookies are committed
     // before the navigation request fires (set_cookie is synchronous on
@@ -1499,7 +1548,17 @@ pub fn forget_window(app: &AppHandle, window_label: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{partition_suffix, x11_from_env};
+    use super::{linux_child_packing, partition_suffix, x11_from_env, STRIP_HEIGHT};
+
+    #[test]
+    fn linux_gtk_box_reserves_only_the_strip_height_on_every_backend() {
+        // Issues #80/#83: Tauri builds both X11 and Wayland child webviews into
+        // a GtkBox. If both children keep GTK's default expand=true, they split
+        // the window and produce the huge blank band. The strip is fixed;
+        // content gets the rest, independently of backend-specific coordinates.
+        assert_eq!(linux_child_packing(true), (false, STRIP_HEIGHT as i32));
+        assert_eq!(linux_child_packing(false), (true, -1));
+    }
 
     #[test]
     fn parses_partition_suffix() {
