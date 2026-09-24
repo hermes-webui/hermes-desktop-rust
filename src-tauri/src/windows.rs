@@ -181,7 +181,12 @@ pub fn open_browser(app: &AppHandle, p: &prefs::Prefs, as_tab: bool) -> Option<W
 
     let (r, g, b) = prefs::pre_paint_color(app);
     let hex = theme::hex_string(r, g, b);
-    let init = bridge::init_script(&label, &hex, p.connection_mode == "ssh");
+    let init = bridge::init_script(
+        std::env::consts::OS,
+        &label,
+        &hex,
+        p.connection_mode == "ssh",
+    );
 
     let host_window = focused_or_recent_content(app);
     let is_first = host_window.is_none();
@@ -517,7 +522,12 @@ fn build_restored_macos_tab(
     let allowed_host = target.host_str().map(|h| h.to_lowercase());
     let (r, g, b) = prefs::pre_paint_color(app);
     let hex = theme::hex_string(r, g, b);
-    let init = bridge::init_script(&label, &hex, p.connection_mode == "ssh");
+    let init = bridge::init_script(
+        std::env::consts::OS,
+        &label,
+        &hex,
+        p.connection_mode == "ssh",
+    );
 
     let nav_app = app.clone();
     let load_label = label.clone();

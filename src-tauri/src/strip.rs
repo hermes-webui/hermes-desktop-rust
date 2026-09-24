@@ -676,7 +676,7 @@ pub(crate) fn add_tab_with(app: &AppHandle, window_label: &str, spec: TabSpec) {
     let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let bg = Color(to8(r), to8(g), to8(b), 255);
     // No injected ssh footer in strip mode — status lives in the strip.
-    let init = bridge::init_script(&tab_label, &hex, false);
+    let init = bridge::init_script(std::env::consts::OS, &tab_label, &hex, false);
 
     // Per-tab cookie isolation (issue #3): each tab gets its own data partition
     // (separate jar). A restored tab REUSES its saved partition so login +
