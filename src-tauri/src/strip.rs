@@ -1334,6 +1334,12 @@ pub fn profile_from_cookies(cookies: &[Cookie<'static>]) -> Option<String> {
 /// session (#18). Runs on a worker thread — the cookie read marshals via the
 /// dispatcher, so it must not be called from inside a wry callout (wry#583).
 fn capture_tab_profile(app: &AppHandle, window_label: &str, tab_label: &str) {
+    // Avoid synchronous cookie reads from the desktop wrapper. WebView2 cookie
+    // reads can deadlock while accessibility/voice-typing software is injecting
+    // text into a focused WebView. Profile dots still update on fresh navigation.
+    let _ = (app, window_label, tab_label);
+    return;
+
     // Guard the cookie read at the CHOKEPOINT, not just at the periodic sweep
     // (#33). `wv.cookies()` is a synchronous WebView2 read that marshals onto —
     // and pumps a nested loop on — the main thread. While the strip's "⋯" popup

@@ -395,47 +395,12 @@ fn main() {
                     updater::spawn_check(&update_handle, false);
                 });
             }
-            // Session autosave (issue #18) + per-tab profile-dot refresh (#26):
-            // one 4s timer. `persist` captures windows/tabs so a frame move or
-            // SPA navigation (no structural event) is reflected; the profile
-            // sweep re-reads each strip tab's cookie so a profile switched
-            // *inside* a tab (an SPA re-render) repaints its dot. Both are cheap
-            // and only act on a real change.
-            {
-                let sess_handle = handle.clone();
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_secs(4));
-                    // Skip this tick's webview work while a native menu modal
-                    // loop is up (the strip's "⋯" popup). Both `persist` (reads
-                    // each tab's URL) and `recapture_profiles` (reads each tab's
-                    // cookie) marshal into the webviews via the runtime
-                    // dispatcher; on Windows that would re-enter the main thread
-                    // from inside the popup's `TrackPopupMenu` modal loop and
-                    // deadlock the UI (#33). The next tick (once the menu closes)
-                    // catches up — both are idempotent and only act on a change.
-                    if sess_handle
-                        .state::<AppState>()
-                        .menu_open
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                    {
-                        continue;
-                    }
-                    session::persist(&sess_handle);
-                    if strip::enabled() {
-                        strip::recapture_profiles(&sess_handle);
-                    }
-                    // Busy re-poll (issue #74): hidden webviews throttle their
-                    // timers, so BUSY_REPORTER's 700ms interval can go quiet in
-                    // a background tab and leave the spinner stale after the
-                    // session finishes. An eval executes regardless of timer
-                    // throttling and re-reads the live S.busy; the reporter's
-                    // debounce means this emits only on an actual change.
-                    windows::eval_all_content(
-                        &sess_handle,
-                        "window.__hermesReportBusy && window.__hermesReportBusy();",
-                    );
-                });
-            }
+            // Windows/WebView2 compatibility: do not periodically poll child
+            // webviews while a focused input may be receiving synthetic text
+            // from voice-dictation tools. Synchronous URL/cookie/eval calls can
+            // re-enter WebView2's UI thread and freeze the host window.
+            // Session persistence remains event-driven (tab/window/navigation
+            // changes), and profile state is refreshed on explicit page events.
             // Chrome poller — the Tauri stand-in for the Swift app's
             // tabbedWindows KVO: keeps webview layout + tabbed class +
             // traffic-light var in sync with native tab-bar/fullscreen
